@@ -74,11 +74,15 @@ class Data:
             Data.LOG(f"temp dir {Data.WDIR_PARTS} is big {temp_size}. consider removing it.", error=True)
 
     def check_dependecies():
+        e=False
         for x in Data.DEPENDECIES:
             try:
                 subprocess.call([x],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             except FileNotFoundError:
-                Data.LOG(f"please install {x}; needed for {Data.DEPENDECIES[x]}",error=True,exit_=True)
+                Data.LOG(f"please install {x}; needed for {Data.DEPENDECIES[x]}",error=True)
+                e=True
+        if e:
+            Data.LOG("cannot continue",exit_=True,error=True)
 
 
 @unique
