@@ -21,7 +21,7 @@ from typing import NewType, Optional
 
 import urllib3
 
-from rlogger import Rlogger
+from .rlogger import Rlogger
 
 
 class Data:
@@ -844,7 +844,6 @@ def main():
             stop_p()
             Data.LOG(repr(e), error=True, exit_=True)
     stop_p()
-main()
 
 
 class Options:
