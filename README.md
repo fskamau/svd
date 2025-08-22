@@ -49,10 +49,8 @@ pip install .
 - Click on the extension and copy the url.
 - Run svd and simply download the video.
  ```bash
- python svd.py ```
- - Simply paste the text and press enter.
-
-
+svd
+```
 
 
 
