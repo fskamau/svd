@@ -42,7 +42,7 @@ class Data:
     WDIR_PARTS: str  # parts/segments stay here
     DEPENDECIES={
             'ffmpeg':'joining media segments',
-            'xsel':' pasting from clipboard'
+            'xsel':'pasting from clipboard'
         }
     def LOG(msg: str, **kwargs) -> None:
         with Data.LOG_LOCK:
@@ -170,7 +170,7 @@ class SD:
 
         counterl = [0, len(segments), format_download_progress]
         main_name = Utils.get_main_name(data["url"])
-        output_video = os.path.join(Utils.WDIR_COMPLETE, f"{main_name}.mp4")
+        output_video = os.path.join(Data.WDIR_COMPLETE, f"{main_name}.mp4")
         output_dir = os.path.join(Data.WDIR_PARTS, f"{main_name}")
         log(f"<JOB> (jobs={len(segments)}, url={stream_url}, segsfolder={output_dir}, video={output_video})", critical=True)
 
@@ -192,6 +192,8 @@ class SD:
         SD.concatenate_ts_files([get_ts_file_path(x) for x in range(len(segments))], output_video, output_dir)
         log(f"download job(video= {output_video} , size={Utils.get_size_from_filename(output_video)} done.", critical=True)
         Utils.rm_part_dir(output_dir, log)
+
+
 
 
 class Utils:
@@ -455,7 +457,7 @@ class Utils:
                     Data.LOG("expected a dict", error=True, exit_=True)
                 download_perf_counter = time.perf_counter()
                 if data["type"] == "segments":
-                    download_segments(data)
+                    SD.download(data)
                 elif data["type"] == "xml":
                     if any(tuple(map(lambda x: x in data["tabURL"], ["facebook.com", "instagram.com"]))):
                         FbIg.download(data)
@@ -929,3 +931,4 @@ def run():
     parser.add_argument("-r", "--chunk_read_size", help="size to read from socket. bigger is better but incase of an error all unwritten data is lost", type=Options.vcrs)
     parser.parse_args()
     main()
+
