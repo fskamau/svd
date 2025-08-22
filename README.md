@@ -1,5 +1,5 @@
 # simple video downloader(svd)
-- svd is a simple downloader for common video urls passed as json.
+### A simple downloader for common video urls passed as json.
 
 ### It can download:
 1. Raw videos e.g example.com/video.mp4
@@ -25,7 +25,7 @@
 -  Passing / or c will read clipboard contents and treat them as json.
 -  passing . or q will quit immediately.
 
-##Dependencies
+## Dependencies
 This package depends on ffmpeg and xsel (for pasting from clipboard)
 
 ## Installation
