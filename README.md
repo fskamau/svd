@@ -9,19 +9,24 @@
 
 ### Notes
 1. simple json should include url,headers & type e.g
+    ```json
     {
         "url":"example.com/video.mp4",
         "headers":
                     {"referer":"example.com"},
         "type":"raw"
     }
+    ```
 
 2. Since creating this json could be tedious, a simple svd browser extension
-    is provided here [url]https://github.com/fskamau/svg-browser.git[/url]
+    is provided [here](https://github.com/fskamau/svd-extension)
 	
 3. The program will continously read stdin for control signals.
 -  Passing / or c will read clipboard contents and treat them as json.
 -  passing . or q will quit immediately.
+
+##Dependencies
+This package depends on ffmpeg and xsel (for pasting from clipboard)
 
 ## Installation
 1. Clone the necessary repos and install svg package
