@@ -47,14 +47,14 @@ class Rlogger:
                 return
             super().emit(record)
 
-    def __init__(self, name: str = None, filename: str = None, stderr=True, datefmt: str = "%Y:%m:%d-%H:%M:%S"):
+    def __init__(self, name: str = None, filename: str = None, stderr=True, datefmt: str = "%Y:%m:%d-%H:%M:%S",level=logging.INFO):
         if not any((filename, stderr)):
             raise Exception("no need for logging")
         self._logger = logging.getLogger(name if name is not None else Rlogger.__name__)
-        self._logger.setLevel(logging.INFO)
+        self._logger.setLevel(level)
         c_format = logging.Formatter("[%(name)s %(asctime)s %(levelname)s] %(message)s", datefmt=datefmt)
         if filename:
-            f_handler = ogging.FileHandler(filename)
+            f_handler =logging.FileHandler(filename)
             f_handler.setLevel(logging.INFO)
             f_handler.setFormatter(c_format)
             self._logger.addHandler(f_handler)
