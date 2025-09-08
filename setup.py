@@ -4,7 +4,6 @@ from setuptools import setup, find_packages
 setup(
     name="svd",
     version="0.1.0",
-    author_email="kamstefin@gmail.com",
     packages=find_packages(),
     install_requires=[
         "urllib3",

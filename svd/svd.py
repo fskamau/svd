@@ -806,10 +806,9 @@ def main():
             if not p.is_alive():
                 break
             if not rlist:
-                continue            
+                continue
             i = sys.stdin.readline().strip()
-            if (il := Data.MESSAGE_QUEUE.qsize()) > 0:
-                assert il == 1 and not Data.MESSAGE_EVENT.is_set()
+            if not Data.MESSAGE_QUEUE.empty():
                 if (ii := Data.MESSAGE_QUEUE.get()) == "/stdin":
                     Data.MESSAGE_QUEUE.put(i)
                     Data.MESSAGE_EVENT.set()
