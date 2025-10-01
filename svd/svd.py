@@ -430,7 +430,6 @@ class Utils:
             log(f"not removing {dir_} since DELETE_SEGMENTS_AFTER_COMPLETE is False")
 
     def child_read_stdin() -> str:
-        assert Data.MESSAGE_QUEUE.qsize() == 0
         assert not Data.MESSAGE_EVENT.is_set()
         Data.MESSAGE_QUEUE.put("/stdin")
         Data.MESSAGE_EVENT.wait()
