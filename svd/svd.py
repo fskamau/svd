@@ -453,7 +453,12 @@ class Utils:
             if i == "print_what":
                 continue
             try:
-                data = json.loads(i)
+                try:
+                    data = json.loads(i)
+                except:
+                    if re.search(r"https*\://.+$",i):
+                        data={"url":i,"headers":{},"type":"raw"}
+                    else:raise                    
                 if not isinstance(data, dict):
                     Data.LOG("expected a dict", error=True, exit_=True)
                 download_perf_counter = time.perf_counter()
@@ -827,8 +832,14 @@ def main():
                 q.put(i)
                 continue
             if len(i) > 2047:
-                Data.LOG("text too long. please use / or c to paste the text from clipboard. stty -icanon may not work as expected", critical=True)
+                Data.LOG("text too long.some text may be clipped by the os. please use / or c to paste the text from clipboard or copy the text to clip.txt then use f. stty -icanon may not work as expected", critical=True)
                 break
+            if i=="f":
+                try:
+                    i=open('clip.txt','r').read()
+                except Exception as e:
+                    Data.LOG(f"{repr(e)}: cannot find clip.txt to paste from ",error=True)
+                    break
             q.put(i)
         except KeyboardInterrupt as e:
             stop_p()
@@ -839,10 +850,11 @@ def main():
 class Options:
     def get_bytes(s: str):
         x, y = s[:-1], s[-1]
-        if y not in "BMG":
+        ss="BKMGT"
+        if y not in ss:
             Data.LOG(f"cannot parse unit of size {y}  '{s}'", critical=True, exit_=True)
         try:
-            x = float(x) * (1024 ** (0 if y == "B" else 2 if y == "M" else 3))
+            x = float(x) * (1024 ** ss.index(y))
             if x <= 0:
                 raise ValueError(x)
             return int(x)
