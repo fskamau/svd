@@ -19,137 +19,92 @@ from concurrent.futures import ThreadPoolExecutor
 from enum import Enum, unique
 from typing import NewType, Optional
 
+from .options import get_options
+from pathlib import Path
+
+
+import logging
+
 import urllib3
+import ssl
 
-from .rlogger import Rlogger
 
+from enum import Enum, unique
+from typing import Optional, Tuple
 
-class Data:
-    """
-    Data class
-    """
-
-    NO_OF_WORKER_THREADS = 2  # number or threads to use.
-    SIZE_OF_PART = 1024**2 * 10  # size of one part
-    DELETE_SEGMENTS_AFTER_COMPLETE = False  # delete the part/segment folders after complete download
-    CHUNK_READ_SIZE = 1024 * 8  # size to read from socket. bigger is better but incase of an error all unwritten data is lost
-    LOG_ = Rlogger("𝘚𝘝𝘋", datefmt="%H/%M:%S")
-    MESSAGE_QUEUE = multiprocessing.Queue()
-    MESSAGE_EVENT = multiprocessing.Event()
-    WDIR = os.path.join(os.getenv("HOME"), ".svd")  # base working dir
-    # complete downloads are saved in WDIR_COMPLETE
-    WDIR_COMPLETE = os.path.join(os.getenv("HOME"), "Downloads")
-    WDIR_PARTS: str  # parts/segments stay here
-    DEPENDECIES={
-            'ffmpeg':'joining media segments',
-            'xsel':'pasting from clipboard'
-        }
-    Verbose=False
-    def LOG(msg: str, **kwargs) -> None:
-        with Data.LOG_LOCK:
-            return Data.LOG_(msg, **kwargs)
-
-    LOG_LOCK = multiprocessing.Lock()
-
-    def init():
-        Utils.mkdir_if_not_exists(Data.WDIR)
-        Data.WDIR_PARTS = os.path.join(Data.WDIR, ".parts")
-        Utils.mkdir_if_not_exists(Data.WDIR_PARTS)
-        Utils.mkdir_if_not_exists(Data.WDIR_COMPLETE)
-        Data.http = urllib3.PoolManager(8)
-        Data.EXEC = ThreadPoolExecutor(Data.NO_OF_WORKER_THREADS, thread_name_prefix="thread")
-
-    def str_():
-        verbose("Options[" f"worker threads: {Data.NO_OF_WORKER_THREADS}\n"
-              f"size of part: {Utils.format_file_size(Data.SIZE_OF_PART)}\n"
-              f"delete segments after completion: {Data.DELETE_SEGMENTS_AFTER_COMPLETE}\n"
-              f"chunk read size: {Utils.format_file_size(Data.CHUNK_READ_SIZE)}\n"
-              f"working dir: {Data.WDIR}\n"
-              f"temp dir: {Data.WDIR_PARTS}\n"
-              f"complete-save dir: {Data.WDIR_COMPLETE}\n"
-              f"verbose: {Data.Verbose}"
-              "]")
-
-    def stats():
-        Data.str_()
-        temp_size = subprocess.check_output(["du", "-sh", Data.WDIR_PARTS]).split()[0].decode("utf-8")
-        if temp_size[-1] == "G":
-            Data.LOG(f"temp dir {Data.WDIR_PARTS} is big {temp_size}. consider removing it.", error=True)
-
-    def check_dependecies():
-        e=False
-        for x in Data.DEPENDECIES:
-            try:
-                subprocess.call([x],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-            except FileNotFoundError:
-                Data.LOG(f"please install {x}; needed for {Data.DEPENDECIES[x]}",error=True)
-                e=True
-        if e:
-            Data.LOG("cannot continue",exit_=True,error=True)
-
-def verbose(msg:str)->None:
-    if Data.Verbose:print(msg)
-
-            
 @unique
-class CLCR(Enum):
-    RQCR_NQ_RCCR = "rq-cr does not match rc-cr"
-    NRQCR_RCCRL_NQ_RCCL = "did not request cr, crl from cr  != received cl"
-    NRQCR_GCR = "did not rq cr got cr"
+class CLCRStatus(Enum):
     OK = "ok"
-    RQCR_NRCCR = "requested cr but did not receive cr"
-    RQCR_NRCCR_RQCL_NRCCL = "requested cr but did not receive cr and received cl!= requested cl"
-    ERROR_RETRIES = 10
+    RQCR_NQ_RCCR = "requested cr does not match received cr"
+    RCCR_NQ_RCCR_RCCR0="requested cr does not match received cr but received cr starts at byte 0-"
+    NRQCR_RCCR_NQ_RCCL = "did not request cr, received cr length != received cl"
+    RQCR_NRCCRCL = "requested cr but did not receive neither cr or cl "
+    RQCR_NRCCR_RQCL_NRCCL = "requested cr but did not receive cr and received cl != requested cl"
+    INVALID_RQ = "requested cl and cr are inconsistent"
+    INVALID_RC = "received cl and cr are inconsistent"
+
+class CLCRHandler:
+    MAX_RETRIES = 10
     SLEEP_SECONDS = 1
 
-    def is_error(clcr: "CLCR") -> bool:
-        assert isinstance(clcr, CLCR)
-        return clcr in [CLCR.RQCR_NQ_RCCR, CLCR.NRQCR_RCCRL_NQ_RCCL, CLCR.RQCR_NRCCR_RQCL_NRCCL]
+    @staticmethod
+    def is_error(status: CLCRStatus) -> bool:
+        return status not in [
+            CLCRStatus.OK,
+            CLCRStatus.RCCR_NQ_RCCR_RCCR0,            
+        ]
 
-    def __str__(self) -> str:
-        return self.value.__str__()
+    @staticmethod
+    def check(
+        rq_cl: Optional[int],
+        rq_cr: Optional[Tuple[int,int]],
+        rc_cl: Optional[int],
+        rc_cr: Optional[Tuple[int,int]],
+        logger:logging.Logger,
+    ) -> CLCRStatus:   
+        # infer lengths from ranges if missing
+        if rq_cr and rq_cl is None:
+            rq_cl = rq_cr[1] - rq_cr[0] + 1
+        if rc_cr and rc_cl is None:
+            rc_cl = rc_cr[1] - rc_cr[0] + 1
+        if rq_cl and rq_cr is None:
+            rq_cr = (0, rq_cl - 1)
+        if rc_cl and rc_cr is None:
+            rc_cr = (0, rc_cl - 1)
 
-    def check(cr1, cr, cl, log):
-        if cr1 is None:
-            cl1 = None
-        else:
-            cl1 = cr1[1] - cr1[0] + 1
-        if cr is not None:
-            crl = cr[1] - cr[0] + 1
-        else:
-            crl = None
-        log = Rlogger.get_named_class_log(log, f"[rq<<cr={cr1},cl={cl1}> rc<cr={cr},cl={cl},crl={crl}>>]")
-        if cl is not None and crl is not None and crl != cl:
-            log(f"rc-cl does not match cl  from rc-cr {cr}; ignoring", critical=True)
-        if cr is not None:
-            if cr1 is not None:
-                if cr[0] != cr1[0] or cr[1] != cr1[1]:
-                    log(CLCR.RQCR_NQ_RCCR, error=True)
-                    return CLCR.RQCR_NQ_RCCR
-            else:
-                if cl is not None:
-                    if crl != cl:
-                        log(CLCR.NRQCR_RCCRL_NQ_RCCL, error=True)
-                        return CLCR.NRQCR_RCCRL_NQ_RCCL
-                else:
-                    return CLCR.OK
-        else:
-            if cr1 is not None:
-                if crl != cl and cl != cl1:
-                    log([CLCR.RQCR_NRCCR_RQCL_NRCCL, crl, cl, cl1], error=True)
-                    return CLCR.RQCR_NRCCR_RQCL_NRCCL
-                log(CLCR.RQCR_NRCCR, error=True)
-                return CLCR.RQCR_NRCCR
-            else:
-                if cl is not None:
-                    if cl == 0:
-                        log(f"did not request cr, did not receive cr and cl is {cl}", error=True, exit_=True)
-                    return CLCR.OK
-                else:
-                    log("unreachable. no rq-cr no rc-cr no rc-cl possible bug", error=True, exit_=True)
-        return CLCR.OK
+        logger.debug(f"[rq_cl={rq_cl}, rq_cr={rq_cr}, rc_cl={rc_cl}, rc_cr={rc_cr}] Checking CL/CR consistency")
 
+        #requested consistency
+        if rq_cl is not None and rq_cr is not None:
+            if (rq_cr[1] - rq_cr[0] + 1) != rq_cl:
+                logger.critical(CLCRStatus.INVALID_RQ)
+                return CLCRStatus.INVALID_RQ
 
+        #received consistency
+        if rc_cl is not None and rc_cr is not None:
+            if (rc_cr[1] - rc_cr[0] + 1) != rc_cl:
+                logger.critical(CLCRStatus.INVALID_RC)
+                return CLCRStatus.INVALID_RC
+
+        #cross checks requested vs received
+        #this is recoverable if rc_cr is from 0-end       
+        if rq_cr and rc_cr:
+            if rq_cr != rc_cr:
+                if rc_cr[0]==0:
+                    return CLCRStatus.RCCR_NQ_RCCR_RCCR0
+                logger.critical(CLCRStatus.RQCR_NQ_RCCR)
+                return CLCRStatus.RQCR_NQ_RCCR
+
+        if rq_cr and not (rc_cr or rc_cl):
+            logger.critical(CLCRStatus.RQCR_NRCCRCL)
+            return CLCRStatus.RQCR_NRCCRCL#not received any
+            
+        if rq_cl and rc_cl and rq_cl != rc_cl:
+            logger.critical(CLCRStatus.RQCR_NRCCR_RQCL_NRCCL)
+            return CLCRStatus.RQCR_NRCCR_RQCL_NRCCL
+
+        return CLCRStatus.OK
+    
 class SD:
     """
     segment Downloader
@@ -194,12 +149,16 @@ class SD:
                 return f"{domain}{segx}"
             return f"{stream_url}/{segx}"
 
-        [_ for _ in Data.EXEC.map(lambda x: Utils.download(x + 1, len(segments), log, None, get_ts_file_path(x), get_segment_url(x), headers, counterl, True), range(len(segments)))]
+        [
+            _
+            for _ in Data.EXEC.map(
+                lambda x: Utils.download(x + 1, len(segments), log, None, get_ts_file_path(x), get_segment_url(x), headers, counterl, True),
+                range(len(segments)),
+            )
+        ]
         SD.concatenate_ts_files([get_ts_file_path(x) for x in range(len(segments))], output_video, output_dir)
         log(f"download job(video= {output_video} , size={Utils.get_size_from_filename(output_video)} done.", critical=True)
         Utils.rm_part_dir(output_dir, log)
-
-
 
 
 class Utils:
@@ -215,49 +174,36 @@ class Utils:
     def release_log_lock():
         Data.LOG_LOCK.release()
 
-    def mkdir_if_not_exists(dir_: str, log: Rlogger = None) -> bool:
-        """returns whether a dir was created"""
-        if os.path.exists(dir_):
-            return False
-        try:
-            os.mkdir(dir_)
-        except Exception as e:
-            Data.LOG(f"cannot continue: {str(e)}", error=True, exit_=True)
-        if log is None:
-            log = Data.LOG
-        log(f"created dir {dir_}", critical=True)
-        return True
-
     def get_main_name(url: str) -> str:
         return hashlib.md5(url.encode("utf-8")).hexdigest()
 
     def get_size_from_filename(filepath: str) -> str:
         return f"{os.path.getsize(filepath)/(1024**2):,.4f} Mb"
 
-    def check_video_already_exists(output_video: str, log: Rlogger, fail: bool = False) -> None:
-        if os.path.exists(output_video):
-            log(f" {output_video} alredy exists {Utils.get_size_from_filename(output_video)}", error=True, exit_=fail)
-            return True
-        return False
+    # def check_video_already_exists(output_video: str, log: Rlogger, fail: bool = False) -> None:
+    #     if os.path.exists(output_video):
+    #         log(f" {output_video} alredy exists {Utils.get_size_from_filename(output_video)}", error=True, exit_=fail)
+    #         return True
+    #     return False
 
-    def get_content_length(headers: urllib3.HTTPHeaderDict, log: Rlogger) -> Optional[int]:
-        content_length = None
-        try:
-            content_length = int(v := headers.get("content-length"))
-        except (ValueError, TypeError):
-            log(f"cannot get content-length from {v}", critical=True)
-        return content_length
+    # def get_content_length(headers: urllib3.HTTPHeaderDict, log: Rlogger) -> Optional[int]:
+    #     content_length = None
+    #     try:
+    #         content_length = int(v := headers.get("content-length"))
+    #     except (ValueError, TypeError):
+    #         log(f"cannot get content-length from {v}", critical=True)
+    #     return content_length
 
-    def get_content_range(headers: urllib3.HTTPHeaderDict, log: Rlogger) -> Optional[tuple[int]]:
-        content_range = None
-        try:
-            content_range = list(map(int, re.findall(r"\d+", cr := headers.get("content-range"))))
-            if len(content_range) != 3:
-                log(f"malformed content range '{cr}'", critical=True)
-                content_range = None
-        except (ValueError, TypeError):
-            pass
-        return content_range
+    # def get_content_range(headers: urllib3.HTTPHeaderDict, log: Rlogger) -> Optional[tuple[int]]:
+    #     content_range = None
+    #     try:
+    #         content_range = list(map(int, re.findall(r"\d+", cr := headers.get("content-range"))))
+    #         if len(content_range) != 3:
+    #             log(f"malformed content range '{cr}'", critical=True)
+    #             content_range = None
+    #     except (ValueError, TypeError):
+    #         pass
+    #     return content_range
 
     def format_file_size(bytes_: int) -> str:
         sizes = " KMGT"
@@ -308,14 +254,14 @@ class Utils:
             r = Data.http.request(method=method, url=url, headers=headers, preload_content=preload_content, enforce_content_length=enforce_content_length)
         except urllib3.exceptions.MaxRetryError as e:
             log(repr(e), exit_=True, error=True)
-        verbose(log(Utils.summarize_headers(r.headers),emit=False))
+        verbose(log(Utils.summarize_headers(r.headers), emit=False))
         if str(r.status)[0] == "4":
             raise StatusCodeException(r)
         cr = Utils.get_content_range(r.headers, log)
         cl = Utils.get_content_length(r.headers, log)
         if allow_mime_text == False:
             if (ctype := r.headers.get("content-type")) is not None:
-                if "text" in ctype:
+                if "text" in ctype and r.status not in (206,):
                     temp_fname = tempfile.NamedTemporaryFile(delete=False)
                     temp_fname.write(r.data)
                     log([url, r.headers], error=True)
@@ -326,7 +272,7 @@ class Utils:
     def download(
         jobid: int,
         total_jobs: int,
-        log: Rlogger,
+        log: logging.Logger,
         cr1: Optional[tuple[int]],
         file_path: str,
         url: str,
@@ -402,8 +348,7 @@ class Utils:
 
     def print_what():
         print("\033[0;103m\033[7;30m\033[0;103m\033[3;30m>>>\033[0m ", end="")
-        
-        
+
     def format_time(seconds):
         m, s = divmod(int(seconds), 60)
         h, m = divmod(m, 60)
@@ -420,7 +365,7 @@ class Utils:
     def get_part_name_from_content_range(content_range: tuple[int]) -> str:
         return f"{'-'.join(tuple(map(str,content_range)))}.part"
 
-    def rm_part_dir(dir_: str, log: Optional[Rlogger] = None) -> None:
+    def rm_part_dir(dir_: str, log: Optional[logging.Logger] = None) -> None:
         if log is None:
             log = Data.LOG
         if Data.DELETE_SEGMENTS_AFTER_COMPLETE:
@@ -437,12 +382,11 @@ class Utils:
         Data.MESSAGE_EVENT.clear()
         return x
 
-    
     def _download(q: multiprocessing.Queue) -> None:
         Data.init()
         Data.stats()
         Data.check_dependecies()
-    
+
         while 1:
             Utils.print_what()
             sys.stdout.flush()
@@ -455,9 +399,10 @@ class Utils:
                 try:
                     data = json.loads(i)
                 except:
-                    if re.search(r"https*\://.+$",i):
-                        data={"url":i,"headers":{},"type":"raw"}
-                    else:raise                    
+                    if re.search(r"https*\://.+$", i):
+                        data = {"url": i, "headers": {}, "type": "raw"}
+                    else:
+                        raise
                 if not isinstance(data, dict):
                     Data.LOG("expected a dict", error=True, exit_=True)
                 download_perf_counter = time.perf_counter()
@@ -474,7 +419,7 @@ class Utils:
             except json.JSONDecodeError as e:
                 Data.LOG(f"cannot parse json {i} {repr(e)}", exit_=True, error=True)
 
-            
+
 class Raw:
     def download(data: dict):
         headers = urllib3.HTTPHeaderDict(data["headers"])
@@ -492,7 +437,7 @@ class Raw:
             log(f"cannot continue; content_length/content_range error {summarize_headers(r.headers)} rq headers {headers}", error=True, exit_=True)
         if content_length is None and content_range is not None:
             content_length = content_range[-1]
-        verbose(log(f"from HEAD request: {Utils.summarize_headers(r.headers)}",emit=False))
+        verbose(log(f"from HEAD request: {Utils.summarize_headers(r.headers)}", emit=False))
         if content_length is not None and content_range is not None and content_length != content_range[-1]:
             log(f"content_length {Utils.format_file_size(content_length)} != content_range[-1] {Utils.format_file_size(content_range[-1])}", critical=True)
         size_present = 0
@@ -558,8 +503,28 @@ class Raw:
             x[0] += y
             return f"{x[0]/x[1]*100:.2f}%"
 
-        counterl = [size_present, (content_length if content_length is not None else content_range[-1] if content_range is not None else None), format_download_progress]
-        [_ for _ in Data.EXEC.map(lambda x: Utils.download(x[0] + 1, len(content_ranges), log, x[1], os.path.join(output_dir, Utils.get_part_name_from_content_range(x[1])), url, headers, counterl, False), enumerate(content_ranges))]
+        counterl = [
+            size_present,
+            (content_length if content_length is not None else content_range[-1] if content_range is not None else None),
+            format_download_progress,
+        ]
+        [
+            _
+            for _ in Data.EXEC.map(
+                lambda x: Utils.download(
+                    x[0] + 1,
+                    len(content_ranges),
+                    log,
+                    x[1],
+                    os.path.join(output_dir, Utils.get_part_name_from_content_range(x[1])),
+                    url,
+                    headers,
+                    counterl,
+                    False,
+                ),
+                enumerate(content_ranges),
+            )
+        ]
         Utils.join_parts(output_video, output_dir, counterl[1], log)
         log(f"Download done {output_video} size {Utils.get_size_from_filename(output_video)}")
         Utils.rm_part_dir(output_dir, log)
@@ -701,7 +666,17 @@ class FbIg:
         # download  init files first
         jobs = itertools.cycle(data["jobs"])
         for x in data["jobs"]:
-            Utils.download("init", 1, log, None, os.path.join(data["output_dir"], x, FbIg.INIT_FILENAME), data["jobs"][x]["init_url"], data["headers"], [0, 0, lambda _, __: "dowloaded init file"], True)
+            Utils.download(
+                "init",
+                1,
+                log,
+                None,
+                os.path.join(data["output_dir"], x, FbIg.INIT_FILENAME),
+                data["jobs"][x]["init_url"],
+                data["headers"],
+                [0, 0, lambda _, __: "dowloaded init file"],
+                True,
+            )
         # we take item from each job
         current_media_number = [data["jobs"][k]["media_number"] for k in list(data["jobs"])]
         if len(current_media_number) == 2:
@@ -710,7 +685,7 @@ class FbIg:
             current_media_number = min(current_media_number)
         else:
             current_media_number = current_media_number[0]
-            
+
         log(f"media_number starting at {FbIg.DEFAULT_PREDICTED_MEDIA_START} current_media_number {current_media_number}")
         for x in data["jobs"]:
             data["jobs"][x]["current_task"] = FbIg.DEFAULT_PREDICTED_MEDIA_START
@@ -720,7 +695,9 @@ class FbIg:
                 for f in data["jobs"]:
                     current_task = data["jobs"][f]["current_task"]
                     data["jobs"][f]["current_task"] += 1
-                    yield f"{f}@{current_task}", current_media_number if current_media_number > current_task else FbIg.INFINITY, log, None, os.path.join(data["output_dir"], f, f"{current_task}"), data["jobs"][f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"), data["headers"], [0, 0, lambda _, __: ""], True
+                    yield f"{f}@{current_task}", current_media_number if current_media_number > current_task else FbIg.INFINITY, log, None, os.path.join(data["output_dir"], f, f"{current_task}"), data["jobs"][f]["media_url"].replace(
+                        FbIg.MEDIA_NUMBER_STR, f"{current_task}"
+                    ), data["headers"], [0, 0, lambda _, __: ""], True
 
         genv = generate_urls()
         # we use threads to download whole stream till last media. then change to only 1 thread to prevent 404
@@ -747,7 +724,7 @@ class FbIg:
                 FbIg.join(data, log)
                 break
 
-    def init_dirs(data: dict, log: Rlogger):
+    def init_dirs(data: dict, log: logging.Logger):
         """
         intit dir in the following format
         [outdir/video|outdir/audio]
@@ -793,6 +770,7 @@ class FbIg:
             Utils.release_log_lock()
             Data.LOG(f"cannot get your choice from '{i}'", error=True, exit_=True)
 
+
 def main():
     q = multiprocessing.Queue()
     p = multiprocessing.Process(target=Utils._download, args=(q,))
@@ -819,7 +797,7 @@ def main():
                     continue
                 Data.LOG(f"unknown message from child {ii}", error=True, exit_=True)
             if i == "":
-                Data.LOG(f"use 'q' or '.' to exit ")
+                Data.LOG(f"use q | . to exit, 'f' to read from clip.txt ")
                 q.put("print_what")
                 continue
             if i == "q" or i == ".":
@@ -827,17 +805,20 @@ def main():
                 break
             if i == "c" or i == "/":
                 i = subprocess.check_output(["xsel", "-bo"]).decode().strip()
-                verbose(Data.LOG(f"paste from clipboard \n{i}",emit=False))
+                verbose(Data.LOG(f"paste from clipboard \n{i}", emit=False))
                 q.put(i)
                 continue
             if len(i) > 2047:
-                Data.LOG("text too long.some text may be clipped by the os. please use / or c to paste the text from clipboard or copy the text to clip.txt then use f. stty -icanon may not work as expected", critical=True)
+                Data.LOG(
+                    "text too long.some text may be clipped by the os. please use / or c to paste the text from clipboard or copy the text to clip.txt then use f. stty -icanon may not work as expected",
+                    critical=True,
+                )
                 break
-            if i=="f":
+            if i == "f":
                 try:
-                    i=open('clip.txt','r').read()
+                    i = open("clip.txt", "r").read()
                 except Exception as e:
-                    Data.LOG(f"{repr(e)}: cannot find clip.txt to paste from ",error=True)
+                    Data.LOG(f"{repr(e)}: cannot find clip.txt to paste from ", error=True)
                     break
             q.put(i)
         except KeyboardInterrupt as e:
@@ -846,80 +827,52 @@ def main():
     stop_p()
 
 
-class Options:
-    def get_bytes(s: str):
-        x, y = s[:-1], s[-1]
-        ss="BKMGT"
-        if y not in ss:
-            Data.LOG(f"cannot parse unit of size {y}  '{s}'", critical=True, exit_=True)
-        try:
-            x = float(x) * (1024 ** ss.index(y))
-            if x <= 0:
-                raise ValueError(x)
-            return int(x)
-        except Exception as e:
-            raise
+Options=get_options()
 
-    def vsop(sop: str):
-        x = Options.get_bytes(sop)
-        if x < 1024**2:
-            Data.LOG(f"size of part too small {Utils.format_file_size(x)}", critical=True, exit_=True)
-        Data.SIZE_OF_PART = int(x)
+class FileObject:
+    """
+    aliases for file paths for a download
+    """
 
-    def vcd(cd: str):
-        Data.WDIR_COMPLETE = cd
+    def __init__(self, data:dict):
+        self.data=data
+        self.__hash__ = self.hash_url(data['url'])
+        self.parts_dir = Path(Options.parts_dir / self.__hash__) / "parts"
+        self.mime_type: str = ""
+        self.initialize_dirs()
 
-    def vwd(cd: str):
-        Data.WDIR = cd
+    @property
+    def complete_download(self) -> Path:
+        return Path(Options.complete_dir / (self.__hash__ + self.mime_type))
 
-    def vwt(cd: str):
-        Data.NO_OF_WORKER_THREADS = int(cd)
+    def initialize_dirs(self) -> None:
+        if not self.parts_dir.exists():
+            self.parts_dir.mkdir(parents=True, exist_ok=True)
+            Options.log.info(f"created dir {str(self.parts_dir)!r}")
 
-    def vd(d: str):
-        Data.DELETE_SEGMENTS_AFTER_COMPLETE = bool(int(d))
+    def get_completed_filename(self, mime_type: Optional[str] = None) -> Path:
+        complete_fp = Path()
+        if mime_type:
+            if mime_type[0] != ".":
+                raise ValueError(f"expects a . in mime_type {mime_type!r}")
+            return Options.complete_dir / (str(self.__completed_file__) + mime_type)
+        return self.complete_download
 
-    def vcrs(crs: str):
-        Data.CHUNK_READ_SIZE = Options.get_bytes(crs)
+    @staticmethod
+    def hash_url(url: str) -> str:
+        return hashlib.md5(url.encode("utf-8")).hexdigest()
 
-        
-def run():
-    parser = argparse.ArgumentParser(
-        prog="svd",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description=textwrap.dedent(
-            """
-                        simple video downloader(svd)
-    svd is a simple downloader for common video urls passed as json.
-    It can download:
-                        [1] Raw videos e.g example.com/video.mp4
-                        [2] Segmented videos (hls)
-                        [3] Specific live videos (from facebook and Instagram)
-    
-    simple json should include url,headers & type e.g
-        {
-            "url":"example.com/video.mp4",
-            "headers":
-                        {"referer":"example.com"},
-            "type":"raw"
-        }
-    
-    Since creating this json could be tedious, a simple svd browser extension
-        is provided here:  https://github.com/fskamau/svd-extension
-    The program will continously read stdin for control signals.
-    Passing / or c will read clipboard contents and treat them as json.
-    passing . or q will quit immediately.
-                        
-                        """
-        ),
-    )       
-    parser.add_argument("-t", "--nowt", help="number of worker threads", type=Options.vwt)
-    parser.add_argument("-s", "--sop", help="size of 1 part. e.g 1M, 10M, 10G. A download will be split into parts <= to this size.", type=Options.vsop)
-    parser.add_argument("-w", "--wdir", help="working dir. A '.parts' dir will be created here", type=Options.vwd)
-    parser.add_argument("-c", "--complete-dir", help="where to save completeled downloads", type=Options.vcd)
-    parser.add_argument("-d", "--delete", help="whether to delete segments in '.parts' folder after completion. 0 for False or any int for True", type=Options.vd)
-    parser.add_argument("-r", "--chunk_read_size", help="size to read from socket. bigger is better but incase of an error all unwritten data is lost", type=Options.vcrs)
-    parser.add_argument("--verbose",help="more logs",action="store_true")
-    args=parser.parse_args()
-    Data.Verbose=args.verbose
-    main()
+    @property
+    def fully_downloaded(self) -> bool:
+        """
+        return: whether a file is completely downloaded
+        """
+        return self.complete_download.exists()
 
+
+if __name__ == "__main__":
+    from .options import get_options
+    opts=get_options()       
+    x = FileObject({'url':"https://example.com"})
+
+    print(x.get_completed_filename(), x.fully_downloaded)
