@@ -21,7 +21,7 @@ from typing import NewType, Optional
 
 from .options import get_options
 from pathlib import Path
-
+from typing import Callable
 
 import logging
 
@@ -383,9 +383,9 @@ class Utils:
         return x
 
     def _download(q: multiprocessing.Queue) -> None:
-        Data.init()
-        Data.stats()
-        Data.check_dependecies()
+        # Data.init()
+        # Data.stats()
+        # Data.check_dependecies()
 
         while 1:
             Utils.print_what()
@@ -771,72 +771,117 @@ class FbIg:
             Data.LOG(f"cannot get your choice from '{i}'", error=True, exit_=True)
 
 
-def main():
-    q = multiprocessing.Queue()
-    p = multiprocessing.Process(target=Utils._download, args=(q,))
-    p.start()
+from  concurrent.futures import Future
+from . import exceptions
+from urllib3 import HTTPHeaderDict
 
-    def stop_p():
-        if p.is_alive():
-            os.kill(p.pid, signal.SIGTERM)
-            p.terminate()
-        return
 
-    while 1:
+class Djob:
+    def __init__(self,url:str,headers:dict,others:dict):
+        self.url=url
+        self.headers=HTTPHeaderDict(headers)
+        self.others=others
+        self.fo=FileObject(url)
+        
+class Downloader:
+    def __init__(self):
+        self.logger=rlogger.get_adapter(Options.logger,threading.current_thread().name)
+
+    def parse_data(self,data:dict)->dict:
         try:
-            rlist, _, __ = select.select([sys.stdin], [], [], 0.1)
-            if not p.is_alive():
-                break
-            if not rlist:
-                continue
-            i = sys.stdin.readline().strip()
-            if not Data.MESSAGE_QUEUE.empty():
-                if (ii := Data.MESSAGE_QUEUE.get()) == "/stdin":
-                    Data.MESSAGE_QUEUE.put(i)
-                    Data.MESSAGE_EVENT.set()
-                    continue
-                Data.LOG(f"unknown message from child {ii}", error=True, exit_=True)
-            if i == "":
-                Data.LOG(f"use q | . to exit, 'f' to read from clip.txt ")
-                q.put("print_what")
-                continue
-            if i == "q" or i == ".":
-                q.put("q")
-                break
-            if i == "c" or i == "/":
-                i = subprocess.check_output(["xsel", "-bo"]).decode().strip()
-                verbose(Data.LOG(f"paste from clipboard \n{i}", emit=False))
-                q.put(i)
-                continue
-            if len(i) > 2047:
-                Data.LOG(
-                    "text too long.some text may be clipped by the os. please use / or c to paste the text from clipboard or copy the text to clip.txt then use f. stty -icanon may not work as expected",
-                    critical=True,
-                )
-                break
-            if i == "f":
-                try:
-                    i = open("clip.txt", "r").read()
-                except Exception as e:
-                    Data.LOG(f"{repr(e)}: cannot find clip.txt to paste from ", error=True)
-                    break
-            q.put(i)
-        except KeyboardInterrupt as e:
-            stop_p()
-            Data.LOG(repr(e), error=True, exit_=True)
-    stop_p()
+            isinstance(data['url'],str)
+        except Exception as e:
+            raise exceptions.SVDHelpExit("expects key 'url' in json containing a str")
+        headers=data.get('headers',{})
+        if 'headers' in data:data.pop('headers')
+        if not isinstance(headers,dict):
+            raise exceptions.SVDHelpExit("expects optional key 'header' in json containing a dict")
+        return Djob(data.pop('url'),headers,data)
+        
+            
+    def download(self,data:dict):
+        djob=self.parse_data(data)
+        print(djob)
 
+        
+class Svdwr:
+    """
+    for sync reading and  sync to the writing to the terminal
+    MainThread is probably running this instance
+    """
+    
+    def __init__(self,downloader:Downloader):
+        self.__downloader__=downloader
+        self.__lock__=rlogger._log_lock
+        self.__future_message__=None
+        self.logger=Options.logger
+        self.logger.info('𝘚𝘝𝘋')
+        self.__write__()
+
+    @property
+    def __expects_message__(self)->bool:
+        return isinstance(self.__future_message__,Future) and not self.__future_message__.done()
+
+    def __set_message__(self,message:str)->None:
+        if not self.__expects_message__:
+            raise RuntimeError("No future expecting a message")
+        self.__future_message__.set_result(message)
+
+    @staticmethod
+    def get_input()->str:
+        i=input('> ')
+        if len(i)>4096-1-1:
+            raise exceptions.SVDHelpExit("text too long. some terminal will cut the text. Save text in a file  'f' and use `svd -r f` instead")
+        return i
+    
+    def __write__(self)->None:
+        while 1:
+            try:                    
+                i=Options.get_input_from_file() or Svdwr.get_input()
+                if self.__expects_message__:
+                    self.__set_message__(i)
+                    continue
+                if i=='.' or i=='q':
+                    break
+                if i == "":
+                    print(f"use q or . to exit, 'svd -h' for help or  paste from clipboard")
+                    continue
+                try:
+                    i=json.loads(i)
+                    if not isinstance(i,dict):
+                        raise  TypeError(f'expected  a dict got {type(i)}')
+                    self.__downloader__.download(i)
+                except (json.JSONDecodeError,TypeError) as e:
+                    self.logger.error(f'cannot parse input json; {repr(e)}')
+            except exceptions.SVDHelpExit as e:
+                self.logger.critical(e.msg)
+                sys.exit(1)
+            except KeyboardInterrupt:
+                return
+        
+
+    def read(self)->str:
+        if self.__expects_message__:
+            self.__future_message__.result()
+            return self.read()
+        else:
+            self.__future_message__=Future()
+            with self.__lock__:
+                return self.__future_message__.result()
+
+
+       
 
 Options=get_options()
+
 
 class FileObject:
     """
     aliases for file paths for a download
     """
 
-    def __init__(self, data:dict):
-        self.data=data
-        self.__hash__ = self.hash_url(data['url'])
+    def __init__(self, url:str):
+        self.__hash__ = self.hash_url(url)
         self.parts_dir = Path(Options.parts_dir / self.__hash__) / "parts"
         self.mime_type: str = ""
         self.initialize_dirs()
@@ -848,7 +893,7 @@ class FileObject:
     def initialize_dirs(self) -> None:
         if not self.parts_dir.exists():
             self.parts_dir.mkdir(parents=True, exist_ok=True)
-            Options.log.info(f"created dir {str(self.parts_dir)!r}")
+            Options.logger.info(f"created dir {str(self.parts_dir)!r}")
 
     def get_completed_filename(self, mime_type: Optional[str] = None) -> Path:
         complete_fp = Path()
@@ -869,10 +914,7 @@ class FileObject:
         """
         return self.complete_download.exists()
 
+from . import rlogger
 
 if __name__ == "__main__":
-    from .options import get_options
-    opts=get_options()       
-    x = FileObject({'url':"https://example.com"})
-
-    print(x.get_completed_filename(), x.fully_downloaded)
+    Svdwr(Downloader())
