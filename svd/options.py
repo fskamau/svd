@@ -22,25 +22,25 @@ class _Options:
         workers,
         part_size,
         filename,
-        redownload,
         chunk_read_size,
         complete_dir,
         parts_dir,
         verbose,
         ssl_on,
-        keep_parts,
+        no_keep,
         clean,
     ):
         self.workers = workers
         self.part_size = part_size
         self.filename = filename
-        self.redownload = redownload
         self.chunk_read_size = chunk_read_size
         self.complete_dir = complete_dir.resolve()
-        self.parts_dir = parts_dir.resolve()
+        # parts dir can be wiped completely using --clean. to prevent accidental setting it to path
+        #not intended then wiping it, we always create a .svd folder in it
+        self.parts_dir = parts_dir.resolve()/'.svd'
         self.verbose = verbose
         self.ssl_on = ssl_on
-        self.keep_parts = keep_parts
+        self.no_keep= no_keep
         self.clean = clean
 
         self.logger = get_logger("𝘚𝘝𝘋" + (" with-no-ssl" if not self.ssl_on else ""))
@@ -53,15 +53,9 @@ class _Options:
             self.logger.warning("ssl turned off.")
         else:
             self.http = urllib3.PoolManager(8)
-        # try:
-        #     self.http.request("GET",url = "https://self-signed.badssl.com/")
-        # except urllib3.exceptions.MaxRetryError as e:
-        #     if e.reason and  isinstance(e.reason,urllib3.exceptions.SSLError):
-        #         self.logger.critical(f"ssl error {repr(e.reason)}. you may consider turning off ssl with --no-ssl flag")
-
         self.logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
-        self.exec = ThreadPoolExecutor(self.workers)
+        self.exec = ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="thread")
         self.dependencies = {
             "ffmpeg": "joining media parts",
         }
@@ -73,21 +67,22 @@ class _Options:
                 self.filename = None
                 return r
             except Exception as e:
-                raise exceptions.SVDHelpExit(f"cannot read file  {str(self.filename)!r} supplied  through -r;  {repr(e)} ")
+                raise exceptions.SVDHelpExit(f"cannot read file  {str(self.filename)!r} supplied  through -i;  {repr(e)} ")
 
     @staticmethod
-    def _get_bytes_from_str(s: str):
-        x, y = s[:-1], s[-1]
+    def _get_bytes_from_str(s: str):        
         ss = "BKMGT"
-        if y not in ss:
-            raise ValueError(f"cannot parse unit of size {y}  {s!r}. valid units are {ss!r}")
         try:
+            x, y = s[:-1], s[-1]
+            if y not in ss:
+                raise ValueError
             x = float(x) * (1024 ** ss.index(y))
             if x <= 0:
                 raise ValueError(x)
             return int(x)
         except Exception as e:
-            raise
+            raise ValueError(f"cannot parse unit of size {y}  in {s!r}. valid units are {','.join(ss)} e.g 1T ")
+
 
     def init(self) -> None:
         self.initialize_dirs()
@@ -110,7 +105,6 @@ class _Options:
                 "parts_dir": str(self.parts_dir),
                 "verbose": self.verbose,
                 "ssl on": self.ssl_on,
-                "keep_parts": self.keep_parts,
             }
         )
 
@@ -151,10 +145,10 @@ def get_options() -> _Options:
         is provided here:  https://github.com/fskamau/svd-extension
     [#] Since some links contain text longer than 2048 bytes, normal clipboards will cut
             the json which will result to json.decoder.JSONDecodeError. save the text to
-            a file and pass it to svd. e.g svd -r clip.txt
+            a file and pass it to svd. e.g svd -i /path/to/saved/file
     [#] The program will continously read stdin for control signals.
         Passing / or c will read clipboard contents and treat them as json.
-/        passing . or q will quit immediately.
+        passing . or q will quit.
 
                         
                         """
@@ -162,29 +156,16 @@ def get_options() -> _Options:
     )
 
     parser.add_argument("-w", dest="workers", type=int, default=1, help="number of worker threads")
-    parser.add_argument(
-        "-s",
-        dest="part_size",
-        default="1024T",
-        help="size of 1 download part. e.g 1M, 512M, 2G. A download will be split into parts with @ part-size <= to this size.",
-    )
+    parser.add_argument("-s", dest="part_size", default="1024T", help="size of 1 download part. e.g 1M, 512M, 2G. A download will be split into parts with @ part-size <= to this size.")
     parser.add_argument("-i", dest="filename", type=Path, default=None, help="file to read json to download")
-    parser.add_argument("-r", dest="redownload", action="store_true", default=False, help="attempt to redownload failed downloads")
 
-    parser.add_argument(
-        "-c", dest="chunk_read_size", default="8K", help="chunk size to read from socket. bigger is better but incase of an error all unwritten data is lost "
-    )
+    parser.add_argument("-c", dest="chunk_read_size", default="1M", help="chunk size to read from socket eg.512K. bigger is better but incase of an error all unwritten data is lost ")
     parser.add_argument("-d", dest="complete_dir", type=Path, default=Path.home() / "Downloads", help="complete files directory")
-    parser.add_argument("-p", dest="parts_dir", type=Path, default=Path.home() / ".svd", help="temporary parts directory")
+    parser.add_argument("-p", dest="parts_dir", type=Path, default=Path.home() , help="temporary parts directory")
     parser.add_argument("-v", dest="verbose", action="store_true", default=False, help="verbose")
-
-    parser.add_argument(
-        "--no-ssl",
-        default=True,
-        action="store_false",
-        help="turn off ssl. unless you know what you are doing, *This is completely dangerous*. It can be used to access content where some servers host files in storage buckets without ssl",
-    )
-    parser.add_argument("--keep-parts", default=True, action="store_false", help="delete parts after a download is complete")
+    
+    parser.add_argument("--no-ssl", default=True, action="store_false", help="turn off ssl. unless you know what you are doing, *This is completely dangerous*. It can be used to access content where some servers host files in storage buckets without ssl")
+    parser.add_argument("--no-keep", default=False, action="store_true", help="delete parts after a download is complete")    
     parser.add_argument("--clean", default=False, action="store_true", help="clean up parts dir")
 
     args = parser.parse_args()
@@ -192,13 +173,12 @@ def get_options() -> _Options:
         workers=args.workers,
         part_size=_Options._get_bytes_from_str(args.part_size),
         filename=args.filename,
-        redownload=args.redownload,
         chunk_read_size=_Options._get_bytes_from_str(args.chunk_read_size),
         complete_dir=args.complete_dir,
         parts_dir=args.parts_dir,
         verbose=args.verbose,
         ssl_on=args.no_ssl,
-        keep_parts=args.keep_parts,
+        no_keep=args.no_keep,
         clean=args.clean,
     )
     _options_instance.init()

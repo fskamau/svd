@@ -6,6 +6,11 @@ from pathlib import Path
 import shutil
 from urllib.parse import urlparse
 
+import mimetypes
+from urllib3._collections import HTTPHeaderDict
+import threading
+import tempfile
+
 
 def format_file_size(bytes_: int) -> str:
     sizes = " KMGT"
@@ -62,8 +67,8 @@ def get_part_name_from_content_range(content_range: tuple[int]) -> str:
     return f"{'-'.join(tuple(map(str,content_range)))}"
 
 
-def rm_part_dir(dir_: str, keep: bool) -> None:
-    if not keep:
+def rm_part_dir(dir_: str, no_keep: bool) -> None:
+    if no_keep:
         shutil.rmtree(dir_)
 
 
@@ -79,3 +84,34 @@ def child_read_stdin() -> str:
 def get_base_url(url: str) -> str:
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def get_extension_from_headers(headers: HTTPHeaderDict) -> str:
+    ctype = headers.get("content-type")
+    if not ctype:
+        return ""
+    ext = mimetypes.guess_extension(ctype.split(";", 1)[0].strip())
+    return ext or ""
+
+
+def get_thread_name() -> str:
+    return threading.current_thread().name
+
+
+def save_response_to_temp_file(b: bytes) -> str:
+    temp_fname = tempfile.NamedTemporaryFile(delete=False)
+    temp_fname.write(b)
+    temp_fname.close()
+    return temp_fname
+
+
+def get_folder_size(path:Path) -> int:
+    path = Path(path)
+    total = 0
+    for p in path.rglob('*'):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except (FileNotFoundError, PermissionError):
+            continue
+    return total

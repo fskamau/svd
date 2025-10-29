@@ -19,7 +19,6 @@ from enum import Enum, unique
 from typing import Optional, Tuple
 from urllib3 import HTTPHeaderDict
 import time
-import tempfile
 
 Options = get_options()
 
@@ -139,14 +138,14 @@ class ProgressFormatter:
         return self.func(self, downloaded)
 
     @staticmethod
-    def do_nothing(*args, **kwargs) -> str:
+    def _do_nothing(*args, **kwargs) -> str:
         """Empty formatter for disabled progress output."""
         return ""
 
     @classmethod
     def default(cls) -> "ProgressFormatter":
         """Return a no-op ProgressFormatter (does nothing)."""
-        pf = cls(total=None, func=cls.do_nothing)
+        pf = cls(total=None, func=cls._do_nothing)
         return pf
 
     def default_progress_formatter(self, downloaded: Optional[int] = None) -> str:
@@ -161,22 +160,24 @@ class ProgressFormatter:
 def make_request(method, url, headers, logger, allow_mime_text: bool = True, preload_content: bool = True, enforce_content_length: bool = True):
     try:
         r = Options.http.request(method=method, url=url, headers=headers, preload_content=preload_content, enforce_content_length=enforce_content_length)
+        logger.debug(summarize_headers(r.headers))
+        if str(r.status)[0] == "4":
+            utils.save_response_to_temp_file(r.data)
+            raise exceptions.StatusCodeException(r)
+        cr = get_content_range(r.headers, logger)
+        cl = get_content_length(r.headers, logger)
+        if allow_mime_text == False:
+            if (ctype := r.headers.get("content-type")) is not None:
+                if "text" in ctype and r.status not in (206,):
+                    temp_fname = utils.save_response_to_temp_file(r.data)
+                    logger.error([url, r.headers])
+                    raise exceptions.DownloadError("mime type contains 'text' which is not allowed check headers")
+        return cr, cl, r
+    except urllib3.exceptions.MaxRetryError as e:
+        if e.reason and isinstance(e.reason, urllib3.exceptions.SSLError):
+            raise exceptions.HelpExit(f"ssl error {repr(e.reason)}. you may consider turning off ssl with `svd --no-ssl` flag which is dangerous")
     except urllib3.exceptions.MaxRetryError as e:
         raise exceptions.CannotContinue(f"max retries error; {repr(e)}")
-    logger.debug(summarize_headers(r.headers))
-    if str(r.status)[0] == "4":
-        raise exceptions.StatusCodeException(r)
-    cr = get_content_range(r.headers, logger)
-    cl = get_content_length(r.headers, logger)
-    if allow_mime_text == False:
-        if (ctype := r.headers.get("content-type")) is not None:
-            if "text" in ctype and r.status not in (206,):
-                temp_fname = tempfile.NamedTemporaryFile(delete=False)
-                temp_fname.write(r.data)
-                logger.error([url, r.headers])
-                temp_fname.close()
-                raise exceptions.CannotContinue(f"content type is {ctype}. status code {r.status} saving contents to {temp_fname.name}")
-    return cr, cl, r
 
 
 def download(
@@ -192,26 +193,24 @@ def download(
     """
     args
     ----
-    url:
-    headers:
-    file_path: where to save the file
-    rq_r: requested range
-    log: the Rlogger object
-    cl1: total resource length
-    progress_formatter: will format the download progress
-    preload_content:whether to load all content first or start streaming it directly to the file
+    url : url 
+    headers :  headers
+    file_path :  where to save the file
+    rq_r :  requested range
+    log :  the Rlogger object
+    cl1 :  total resource length
+    progress_formatter :  will format the download progress
+    preload_content : whether to load all content first or start streaming it directly to the file
     """
     if file_path.exists():
-        logger.debug(f"skipping {str(file_path)} since it exists {pf(file_path.stat().st_size)}")
+        logger.debug(f"skipping {str(file_path)} since it exists {utils.format_file_size(file_path.stat().st_size)} {progress_formatter(file_path.stat().st_size)}")
         return
     if "range" in headers or not rq_r.is_default:
         headers["range"] = str(rq_r)
         logger.debug(f"downloading range {headers['range']}")
-    cr, cl, r = make_request(
-        "GET", url, headers=headers, logger=logger, allow_mime_text=False, preload_content=preload_content, enforce_content_length=preload_content
-    )
+    cr, cl, r = make_request("GET", url, headers=headers, logger=logger, allow_mime_text=False, preload_content=preload_content, enforce_content_length=preload_content)
     if not check_clcr(cl1, rq_r, cl, cr, logger):
-        raise exceptions.DownloadError(f"cl/cr errors while downloading {file_path} try clearing parts folder ")
+        raise exceptions.DownloadError(f"cl/cr errors while downloading {file_path} try clearing parts folder with  and setting part size to max using svd --clean -s 1000TB")
 
     if not preload_content:
         with file_path.open("wb") as wrt:
@@ -221,7 +220,7 @@ def download(
                 if not chunk:
                     break
                 wrt.write(chunk)
-                logger.debug(progressformatter(len(chunk)))
+                logger.info(progress_formatter(len(chunk)))
     else:
         r.data
         with file_path.open("wb") as wrt:
@@ -231,11 +230,7 @@ def download(
     s = file_path.stat().st_size
     if not rq_r.is_default:
         if s != len(rq_r):
-            raise exceptions.DownloadError(
-                "requested range size {len(rq_r)} != size of file written {s}"
-                f"try removing cleaning up part-folder {file_path.parent()} and"
-                "download whole resource by setting part size to max `svd -p 1T`"
-            )
+            raise exceptions.DownloadError("requested range size {len(rq_r)} != size of file written {s}" f"try removing cleaning up part-folder {file_path.parent()} and" "download whole resource by setting part size to max `svd -p 1T`")
     logger.info(f"wrote file {str(file_path)} {utils.format_file_size(s)} {progress_formatter()}")
 
 

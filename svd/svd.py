@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import itertools
 import json
+import logging
 import multiprocessing
 import os
 import re
@@ -15,18 +16,17 @@ import textwrap
 import threading
 import time
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from enum import Enum, unique
-from typing import NewType, Optional
-
-from .options import get_options
+from io import StringIO
 from pathlib import Path
-from typing import Callable
-
-import logging
+from typing import Callable, NewType, Optional
 
 import urllib3
-import ssl
+from urllib3 import HTTPHeaderDict
+
+from . import exceptions, request, utils
+from .options import get_options
 
 
 class HLS:
@@ -48,8 +48,11 @@ class HLS:
         logger = rlogger.get_adapter(Options.logger, HLS.__name__)
         if len(segments) == 0:
             raise exceptions.HLSError("segments length is 0")
-        output_video = djob.fo.get_completed_filename()
+        output_video = djob.fo.complete_download_filename
         logger.debug(f"<JOB> (jobs={seg_len}, url={stream_url}, segsfolder={djob.fo.parts_dir}, video={output_video})")
+
+        if djob.fo.check_completed_download(logger=logger):
+            return
 
         def get_segment_url(x):
             if (segx := segments[x]).startswith("http"):
@@ -58,8 +61,9 @@ class HLS:
                 return f"{domain}{segx}"
             return f"{stream_url}/{segx}"
 
-        def format_progress(self, _=None):
-            self.downloaded += 1
+        def format_progress(self, downloaded: Optional[int] = None):
+            if downloaded is not None:
+                self.downloaded += 1
             return f"{self.downloaded/self.total*100:.2f}%"
 
         progress_formatter = request.ProgressFormatter(seg_len, format_progress)
@@ -70,16 +74,16 @@ class HLS:
                     get_segment_url(x),
                     djob.headers,
                     djob.fo.parts_dir / str(x),
-                    logger=rlogger.get_adapter(logger, f"job {x+1}/{seg_len}"),
+                    logger=rlogger.get_adapter(logger, f"job {x+1}/{seg_len} {utils.get_thread_name()}"),
                     progress_formatter=progress_formatter,
                     preload_content=True,
                 ),
                 range(seg_len),
             )
         ]
-        HLS.concatenate_ts_files([get_ts_file_path(x) for x in range(seg_len)], output_video, djob.fo.parts_dir)
-        logger.ok(f"download done {str(output_video)} , size={output_video.stat().st_size} done.")
-        utils.rm_part_dir(djob.fo.parts_dir, logger)
+        HLS.concatenate_ts_files([djob.fo.parts_dir / str(x) for x in range(seg_len)], output_video, djob.fo.parts_dir)
+        logger.ok(f"download done {str(output_video)} , size={utils.format_file_size(output_video.stat().st_size)} done.")
+        utils.rm_part_dir(djob.fo.parts_dir, Options.no_keep)
 
 
 class Raw:
@@ -88,9 +92,7 @@ class Raw:
         logger = rlogger.get_adapter(Options.logger, Raw.__name__)
         if djob.fo.check_completed_download(logger=logger):
             return
-        content_range, content_length, r = request.make_request(
-            "GET", djob.url, djob.headers, logger, allow_mime_text=False, preload_content=False
-        )  # some servers will return 403 with 'HEAD'
+        content_range, content_length, r = request.make_request("GET", djob.url, djob.headers, logger, allow_mime_text=False, preload_content=False)  # some servers will return 403 with 'HEAD'
         r.release_conn()
         logger.debug(f"from HEAD request: {request.summarize_headers(r.headers)}")
         if content_range.total != content_length:
@@ -116,9 +118,7 @@ class Raw:
                     continue
                 if part_size != (ppart_size := (v[1] - v[0] + 1)):
                     if part_size > ppart_size:
-                        raise exceptions.CorruptedPartsDir(
-                            f"malformed part file range name for {file}; actual partfile size" f"{part_size} is greather than max indicated {ppart_size}"
-                        )
+                        raise exceptions.CorruptedPartsDir(f"malformed part file range name for {file}; actual partfile size" f"{part_size} is greather than max indicated {ppart_size}")
                     v[1] = v[0] + part_size - 1
                     new_part_name = djob.fo.parts_dir / utils.get_part_name_from_content_range(v)
                     logger.critical(f"renaming part file {file} to {new_part_name} since its size is {part_size}  and not {ppart_size}")
@@ -159,7 +159,7 @@ class Raw:
                     djob.url,
                     djob.headers,
                     djob.fo.parts_dir / x[1].as_filename,
-                    rlogger.get_adapter(logger, f"job {x[0]+1}/{len(content_ranges)}"),
+                    rlogger.get_adapter(logger, f"job {x[0]+1}/{len(content_ranges)} {utils.get_thread_name()}"),
                     x[1],
                     content_length,
                     progress_formatter=request.ProgressFormatter(content_length - size_present),
@@ -168,17 +168,11 @@ class Raw:
                 enumerate(content_ranges),
             )
         ]
-        utils.join_parts(djob.fo.get_completed_filename(), djob.fo.parts_dir)
-        logger.ok(f"Download done {djob.fo.get_completed_filename()} size {utils.format_file_size(djob.fo.get_completed_filename().stat().st_size)}")
-        utils.rm_part_dir(djob.fo.parts_dir, Options.keep_parts)
+        utils.join_parts(djob.fo.complete_download_filename, djob.fo.parts_dir)
+        logger.ok(f"Download done {djob.fo.complete_download_filename} size {utils.format_file_size(djob.fo.complete_download_filename.stat().st_size)}")
+        utils.rm_part_dir(djob.fo.parts_dir, Options.no_keep)
 
 
-class StatusCodeException(Exception):
-    def __init__(self, r: urllib3.BaseHTTPResponse):
-        self.r = r
-
-    def __str__(self) -> str:
-        return f"status code {self.r.status} headers {self.r.headers} url {self.r.url} data {self.r.data}"
 
 
 class MaybeMetaAlteredCodeException(NotImplementedError):
@@ -190,59 +184,73 @@ class FbIg:
     download <facebook & instagram> livestreams
     """
 
-    DEFAULT_NS = {"": "urn:mpeg:dash:schema:mpd:2011"}
     MIMETYPE_REGEX = re.compile(r"(audio|video)/(\w+)")
     DEFAULT_PREDICTED_MEDIA_START = 100
     MEDIA_NUMBER_STR = "$Number$"
     INIT_FILENAME = "0"  # for easy sorting cat $(ls -v) > out.mp4
     INFINITY = "∞"
-    STATUS_CODE_ERROR_COUNT = 3
-    STATUS_CODE_ERROR_SLEEP = 5
+    STATUS_CODE_ERROR_COUNT = 1
+    STATUS_CODE_ERROR_SLEEP = 0
     assert STATUS_CODE_ERROR_COUNT > 0
 
-    def join(data, log):
+    def join(djob:'Djob', logger:logging.Logger):
         paths = []
-        for f in data["jobs"]:
-            p = os.path.join(data["output_dir"], f)
+        complete=djob.fo.complete_download_filename
+        for f in djob.jobs:
+            p=djob.fo.parts_dir/f
             try:
-                files = sorted(os.listdir(p), key=lambda x: int(x))  # need int('v') to fail if str file name exists
-                part_file = os.path.join(p, f"{f}")
-                with open(part_file, "wb") as wrt:
+                files = sorted(p.iterdir(),key=lambda path: int(path.name))  # will raise ValueError if not numeric
+                part_file = p/f
+                logger.ok(part_file)
+                with part_file.open("wb") as wrt:
                     for part in files:
-                        shutil.copyfileobj(open(os.path.join(p, part), "rb"), wrt)
-                if data["jlen"] == 1:
-                    out_file = data["output_video"]
+                        shutil.copyfileobj((p/part).open('rb'), wrt)
+                if djob.jlen == 1:
+                    out_file = complete
                 else:
-                    paths.append(out_file := os.path.join(p, f"{f}.{data['output_video'].split('.')[-1]}"))
-                Utils.check_video_already_exists(out_file, log, True)
+                    paths.append(out_file := (p/f"{complete.name}"))
                 try:
                     subprocess.check_output(["ffmpeg", "-i", part_file, "-c", "copy", out_file])
+                    part_file.unlink()
                 except subprocess.CalledProcessError:
-                    log(f"cannot copy {part_file}, encoding")
-                    subprocess.check_output(["ffmpeg", "-y", "-i", part_file, out_file])
-                os.remove(part_file)
-                log(f"joined parts to {out_file}")
+                    logger.critical(f"cannot copy {part_file}, encoding instead (might take a long time)")
+                    try:
+                        subprocess.check_output(["ffmpeg", "-y", "-i", part_file, out_file])
+                    except Exception as e:
+                        raise RuntimeError(f"cannot continue; ffmpeg encode has failed {repr(e)}")
+                logger.debug(f"joined parts to {out_file}")
             except ValueError:
-                log(f"dir {data['output_dir']} contains other files; cannot continue. all filenames are ints", error=True, exit_=True)
-        if data["jlen"] == 2:
-            log("joining video and audio")
-            subprocess.check_output(["ffmpeg", "-i", paths[0], "-i", paths[1], "-c", "copy", data["output_video"]])
-        [os.remove(x) for x in paths]
-        log(f"wrote {data['output_video']} {Utils.get_size_from_filename(data['output_video'])}")
+                raise RuntimeError(f"dir {complete} is corrupted as it contains other files, try cleaning parts dir with --no-keep ")
+        if djob.jlen == 2:
+            logger.debug("joining video and audio")
+            if complete.exists():
+                raise RuntimeError("{complete} has exist while process was running; did you create it?")
+            subprocess.check_output(["ffmpeg", "-i", paths[0], "-i", paths[1], "-c", "copy", complete])
+        [x.unlink() for x in paths]
+        logger.info(f"wrote {complete} {utils.format_file_size(complete.stat().st_size)}")
 
-    def parse_xml(xml_str: str) -> list[str]:
+    def get_namespaces(xml_str: str) -> dict:
+        """Return all namespaces in an XML string as {prefix: uri}."""
+        namespaces = {}
+        for event, elem in ET.iterparse(StringIO(xml_str), events=("start-ns",)):
+            prefix, uri = elem
+            namespaces[prefix] = uri
+        return namespaces
+
+    def parse_xml(xml_str: str, logger: logging.Logger) -> list[str]:
         """
         extract useful info from xml mpd. strictly for facebook and instagram
         """
         try:
             reps = []
             root = ET.fromstring(xml_str)
-            # print(ET.tostring(root).decode())
-            for seg in root.findall(".//AdaptationSet", FbIg.DEFAULT_NS):
+            namespaces = FbIg.get_namespaces(xml_str)
+            # logger.debug(ET.tostring(root).decode())
+            for seg in root.findall(".//AdaptationSet", namespaces):
                 if (s := seg.get("segmentAlignment")) is not None:
                     if s != "true":
                         raise MaybeMetaAlteredCodeException(f"segment alignment is not 'true' {seg.attrib}. not implemented")
-            for rep in root.findall(".//Representation", FbIg.DEFAULT_NS):
+            for rep in root.findall(".//Representation", namespaces):
                 if "wvtt" in rep.get("codecs"):  # skip web video text tracks like subtitles and captions
                     continue
                 rd = {"mimetype": rep.attrib["mimeType"]}
@@ -254,143 +262,147 @@ class FbIg:
                     rd["quality"] = a
                 if rd["mimetype"].startswith("audio") and (a := rep.get("bandwidth")) is not None:
                     rd["bandwidth"] = int(a)
-                (st,) = rep.findall(".//SegmentTemplate", FbIg.DEFAULT_NS)
+                (st,) = rep.findall(".//SegmentTemplate", namespaces)
                 rd["init"] = st.attrib["initialization"]
                 if not rd["init"].startswith("."):
                     raise MaybeMetaAlteredCodeException(f"init url does not start with . {rd['init']}")
-                (st,) = rep.findall(".//SegmentTimeline[@FBPredictedMedia][@FBPredictedMediaEndNumber]", FbIg.DEFAULT_NS)
+                (st,) = rep.findall(".//SegmentTimeline[@FBPredictedMedia][@FBPredictedMediaEndNumber]", namespaces)
                 rd["media_number"] = int(st.attrib["FBPredictedMediaEndNumber"])
                 rd["media"] = st.attrib["FBPredictedMedia"]
                 if rd["media"].count(FbIg.MEDIA_NUMBER_STR) != 1:
                     raise MaybeMetaAlteredCodeException(f"MEDIA_NUMBER_STR mismatch in {rd['media']}")
-                st = rep.findall(".//SegmentTimeline[@FBPredictedMediaStartNumber]", FbIg.DEFAULT_NS)
+                st = rep.findall(".//SegmentTimeline[@FBPredictedMediaStartNumber]", namespaces)
                 if len(st) == 1:
                     if int(st[0].attrib["FBPredictedMediaStartNumber"]) != FbIg.DEFAULT_PREDICTED_MEDIA_START:
                         raise MaybeMetaAlteredCodeException(f"different DEFAULT_PREDICTED_MEDIA_START. dump {rd} {ET.tostring(rep).decode()}")
                 else:
-                    Data.LOG(
-                        f"attribute FBPredictedMediaStartNumber does not exist in mime {rd['mimetype']}. defaulting to '{FbIg.DEFAULT_PREDICTED_MEDIA_START}'",
-                        critical=True,
-                    )
+                    logger.critical(f"attribute FBPredictedMediaStartNumber does not exist in mime {rd['mimetype']}. " f"defaulting to '{FbIg.DEFAULT_PREDICTED_MEDIA_START}'")
                 reps.append(rd)
             return reps
         except AttributeError as e:
-            Data.LOG(f"cannot parse xml {repr(e)}", exit_=True, error=True)
+            raise exceptions.CannotContinue(f"cannot parse xml {repr(e)}")
         except Exception as e:
-            Data.LOG(f"{repr(e)}", exit_=True, error=True)
+            raise exceptions.CannotContinue(f"{repr(e)}")
 
-    def download(data: dict):
-        formats = FbIg.parse_xml(data["xmlData"])
-        data = {"url": data["url"], "headers": data["headers"], "main_name": Utils.get_main_name(data["url"])}
-        data["output_dir"] = os.path.join(Data.WDIR_PARTS, f"{data['main_name']}")
+    def download(djob: "Djob"):
+        logger = rlogger.get_adapter(Options.logger, "LIVE")
+        logger.debug("live facebook/instagram")
+        formats = FbIg.parse_xml(djob.others["xmlData"], logger)
+        # choice = FbIg.get_desired_format_choice(formats,logger)
 
-        log = Rlogger.get_named_class_log(Data.LOG, "[LIVE]")
-        Utils.mkdir_if_not_exists(data["output_dir"], log)
-        choice = FbIg.get_desired_format_choice(formats)
-        data["jlen"] = len(choice)
+        choice={ 'audio': {'mimetype': 'audio/mp4', 'file_extension': 'mp4', 'bandwidth': 131054, 'init': '../dash-lp-ld-a/1279123497563911_0-init.m4a?ms=m_C&sc_t=1&ccb=2-4', 'media_number': 2915, 'media': '../ID/dash-lp-ld-a/1279123497563911_0-$Number$.m4a?ms=m_C&sc_t=1&ccb=2-4'}}
+
+
+        djob.jlen = len(choice)
         # set final file extension based on choice
-        data["output_video"] = os.path.join(
-            Data.WDIR_COMPLETE,
-            f"{data['main_name']}.{ (choice['audio'] if  data['jlen'] == 1 and list(choice)[0] == 'audio' else choice['video']  )['file_extension']}",
-        )
-        if Utils.check_video_already_exists(data["output_video"], log):
+        djob.fo.set_mime_type(f".{(choice['audio'] if  djob.jlen == 1 and list(choice)[0] == 'audio' else choice['video']  )['file_extension']}")
+        if djob.fo.check_completed_download(logger):
             return
-        log(f"downloading {'video + audio' if len(choice)>1 else list(choice)[0] +' only'}")
+        logger.info(f"downloading {'video + audio' if len(choice)>1 else list(choice)[0] +' only'}")
         for c in choice:
             for k in ["init", "media"]:
                 ipu = len(re.search(r"(^\.+)", choice[c][k]).group(1))
-                choice[c][k + "_url"] = "/".join(data["url"].split("/")[:-ipu]) + choice[c][k][ipu:]
+                choice[c][k + "_url"] = "/".join(djob.url.split("/")[:-ipu]) + choice[c][k][ipu:]
                 choice[c].pop(k)
-        data["jobs"] = choice
-        FbIg.init_dirs(data, log)
-        FbIg._download(data, log)
+        djob.jobs = choice
+        FbIg.init_dirs(djob, logger)
+        FbIg._download(djob, logger)
+        logger.ok(f"downloaded {djob.fo.complete_download_filename} size {utils.format_file_size(djob.fo.complete_download_filename.stat().st_size)}")
 
-    def _download(data: dict, log) -> None:
+    def _download(djob: "Djob", logger: logging.Logger) -> None:
         # download  init files first
-        jobs = itertools.cycle(data["jobs"])
-        for x in data["jobs"]:
-            Utils.download(
-                "init",
-                1,
-                log,
-                None,
-                os.path.join(data["output_dir"], x, FbIg.INIT_FILENAME),
-                data["jobs"][x]["init_url"],
-                data["headers"],
-                [0, 0, lambda _, __: "dowloaded init file"],
-                True,
+        for x in djob.jobs:
+            request.download(
+                djob.jobs[x]["init_url"],
+                djob.headers,
+                djob.fo.parts_dir / x / FbIg.INIT_FILENAME,
+                rlogger.get_adapter(logger, f"init-header for {x}"),
+                progress_formatter=request.ProgressFormatter.default(),
+                preload_content=True,
             )
         # we take item from each job
-        current_media_number = [data["jobs"][k]["media_number"] for k in list(data["jobs"])]
+        current_media_number = [djob.jobs[k]["media_number"] for k in list(djob.jobs)]
         if len(current_media_number) == 2:
             if current_media_number[0] != current_media_number[1]:
-                log(
-                    f"media_number mismatch {current_media_number}. endfile could be corrupted. defaulting to most minimum {current_media_number:=min(current_media_number)}"
-                )
+                log(f"media_number mismatch {current_media_number}. endfile could be corrupted. defaulting to most minimum {current_media_number:=min(current_media_number)}")
             current_media_number = min(current_media_number)
         else:
             current_media_number = current_media_number[0]
 
-        log(f"media_number starting at {FbIg.DEFAULT_PREDICTED_MEDIA_START} current_media_number {current_media_number}")
-        for x in data["jobs"]:
-            data["jobs"][x]["current_task"] = FbIg.DEFAULT_PREDICTED_MEDIA_START
+        logger.debug(f"media_number starting at {FbIg.DEFAULT_PREDICTED_MEDIA_START} current_media_number {current_media_number}")
+        for x in djob.jobs:
+            djob.jobs[x]["current_task"] = FbIg.DEFAULT_PREDICTED_MEDIA_START
+
 
         def generate_urls():
             while 1:
-                for f in data["jobs"]:
-                    current_task = data["jobs"][f]["current_task"]
-                    data["jobs"][f]["current_task"] += 1
-                    yield f"{f}@{current_task}", current_media_number if current_media_number > current_task else FbIg.INFINITY, log, None, os.path.join(
-                        data["output_dir"], f, f"{current_task}"
-                    ), data["jobs"][f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"), data["headers"], [0, 0, lambda _, __: ""], True
+                for f in djob.jobs:
+                    current_task = djob.jobs[f]["current_task"]
+                    djob.jobs[f]["current_task"] += 1
+                    yield {'url':djob.jobs[f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"),'f':f,'current_task':str(current_task)}
 
+
+        def download_with_thread_local_vars(t):
+            request.download(
+                t['url'],
+                djob.headers,
+                djob.fo.parts_dir/t['f']/t['current_task'],
+                rlogger.get_adapter(logger,f"{t['f']}@{t['current_task']}/{current_media_number} {utils.get_thread_name()}"),
+                progress_formatter=request.ProgressFormatter.default(),
+                preload_content=True                
+            )
+            
         genv = generate_urls()
         # we use threads to download whole stream till last media. then change to only 1 thread to prevent 404
-        log("downloading from livestream start to now")
-        assert current_media_number > FbIg.DEFAULT_PREDICTED_MEDIA_START
-        tasks = [next(genv) for x in range((current_media_number - FbIg.DEFAULT_PREDICTED_MEDIA_START) * len(data["jobs"]))]
-        [_ for _ in Data.EXEC.map(lambda x: Utils.download(*x), tasks)]
-        log("downloading from now till the stream ends.")
+        logger.info("downloading from livestream start to now")
+        if(current_media_number < FbIg.DEFAULT_PREDICTED_MEDIA_START):
+            raise RuntimeError("current_media_number < FbIg.DEFAULT_PREDICTED_MEDIA_START")
+        tasks=[next(genv) for _ in range((current_media_number - FbIg.DEFAULT_PREDICTED_MEDIA_START))]
+        [_ for _ in Options.exec.map(download_with_thread_local_vars,tasks)]
+        logger.info("downloading from now till the stream ends.")
         # we now use the mainthread infinetly. receiveing error status code might be the end of stream
-        while 1:
-            try:
-                dl = next(genv)
-                for x in range(FbIg.STATUS_CODE_ERROR_COUNT - 1, -1, -1):
-                    try:
-                        Utils.download(*dl)
-                        break
-                    except StatusCodeException as e:
-                        if x == 0:
-                            raise
-                        log(f"status {e.r.status}; sleeping for {FbIg.STATUS_CODE_ERROR_SLEEP}sec. remaining retries {x} ", critical=True)
-                        time.sleep(FbIg.STATUS_CODE_ERROR_SLEEP)
-            except StatusCodeException as e:
-                log(f"ecountered StatusCodeException with status code {e.r.status}; saving file now", critical=True)
-                FbIg.join(data, log)
-                break
+        def one_thread():
+            while 1:
+                try:
+                    dl = next(genv)
+                    for x in range(FbIg.STATUS_CODE_ERROR_COUNT - 1, -1, -1):
+                        try:
+                            download_with_thread_local_vars(dl)
+                            break
+                        except exceptions.StatusCodeException as e:
+                            if x == 0:
+                                raise
+                            logger.critical(f"status {e.r.status}; sleeping for {FbIg.STATUS_CODE_ERROR_SLEEP}sec. remaining retries {x} ")
+                            time.sleep(FbIg.STATUS_CODE_ERROR_SLEEP)
+                except exceptions.StatusCodeException as e:
+                    logger.info(f"ecountered StatusCodeException with status code {e.r.status}; saving file now")
+                    FbIg.join(djob, logger)
+                    break
+        Options.exec.submit(one_thread).result()
 
-    def init_dirs(data: dict, log: logging.Logger):
+    def init_dirs(djob: "Djob", logger: logging.Logger):
         """
         intit dir in the following format
         [outdir/video|outdir/audio]
         """
-        ed = os.listdir(data["output_dir"])
-        if any([x not in list(data["jobs"]) for x in ed]):
-            log(f"other dirs exists in {data['output_dir']} cannot continue {ed}", error=True, exit_=True)
-        for x in list(data["jobs"].keys()):
-            if os.path.exists(p := os.path.join(data["output_dir"], x)):
-                log(f"dir {data['main_name']}/{x} exists. format corruption if a different format has been chosen. Nothing will be removed", critical=True)
-            else:
-                Utils.mkdir_if_not_exists(p, log)
+        for p in djob.fo.parts_dir.iterdir():
+            if p.name not in djob.jobs:
+                raise FileExistsError(f"other dirs exists in {djob.fo.parts_dir} cannot continue. consider using --no-keep to clean the parts dir first")
 
-    def get_desired_format_choice(formats: list[str]):
+        for x in list(djob.jobs.keys()):
+            if (p := (djob.fo.parts_dir / x)).exists():
+                logger.critical(f"dir {p} exists. format corruption if a different format has been chosen. Nothing will be removed")
+            else:
+                p.mkdir()
+
+    def get_desired_format_choice(formats: list[str], logger: logging.Logger):
         choices = []
         for index, f in enumerate(formats):
             c = f"{f['mimetype']}"
             if f.get("quality") is not None:
                 c += f"@{f['quality']}"
             if f.get("bandwidth") is not None:
-                c += f"@{Utils.format_bandwidth(f['bandwidth'])}"
+                c += f"@{utils.format_bandwidth(f['bandwidth'])}"
             choices.append((index, c))
         other = list(itertools.combinations(choices, 2))
         if len(other) > 0:
@@ -404,23 +416,13 @@ class FbIg:
         for index, c in enumerate(choices):
             s += f"{next(colors)}[{index:3d} => {c[-1]}]\033[0m\n"
         s += f"{'-'*50}\nThe following {len(choices)} formats exists. please choose 1"
-        Utils.get_log_lock()
-        print(s)
         try:
-            v = choices[abs(int(i := Utils.child_read_stdin()))]
-            Data.LOG_(f"you choose '{v[-1]}'")
-            Utils.release_log_lock()
+            text = Wr.read(s)
+            v = choices[abs(int(i := text))]
+            logger.info(f"you choose '{v[-1]}'")
             return {formats[x].pop("basename"): formats[x] for x in v[:-1]}
         except (ValueError, IndexError) as e:
-            Utils.release_log_lock()
-            Data.LOG(f"cannot get your choice from '{i}'", error=True, exit_=True)
-
-
-from concurrent.futures import Future
-from . import exceptions
-from urllib3 import HTTPHeaderDict
-from . import utils
-from . import request
+            raise exceptions.CannotContinue(f"cannot get your choice from '{i}'")
 
 
 class Djob:
@@ -445,17 +447,20 @@ class Downloader:
             data.pop("headers")
         if not isinstance(headers, dict):
             raise exceptions.HelpExit("expects optional key 'header' in json containing a dict")
-        return Djob(data.pop("url"), headers, data)
+        djob = Djob(data.pop("url"), headers, data)
+        djob.fo.set_mime_type(utils.get_extension_from_headers(djob.headers))
+        return djob
 
     def download(self, data: dict):
         djob = self.parse_data(data)
         t = data.get("type", "raw")
-        f = Raw.download if t == "raw" else HLS.download if t == "segments" else FbIg.download if type == "fb/ig" else None
+        f = Raw.download if t == "raw" else HLS.download if t == "segments" else FbIg.download if t == "xml" else None
         if not f:
-            raise exceptions.HelpExit(f"malformed type: unknown 'type':{t}")
+            raise exceptions.CannotContinue(f"malformed type: unknown 'type':{t}")
+        self.logger.debug(f"cwd {djob.fo.cwd}")
+        djob.fo.initialize_dirs(self.logger)
         with (djob.fo.cwd / "info").open("w") as wrt:
             wrt.write(json.dumps(data))
-        self.logger.debug(f"cwd {djob.fo.cwd}")
         f(djob)
 
 
@@ -468,46 +473,39 @@ class FileObject:
         self.cwd = Options.parts_dir / self.hash_url(url)
         self.parts_dir = self.cwd / "parts"
         self.mime_type: str = ""
-        self.initialize_dirs()
 
     @property
-    def complete_download(self) -> Path:
+    def complete_download_filename(self) -> Path:
         return Path(Options.complete_dir / (self.cwd.parts[-1] + self.mime_type))
 
-    def initialize_dirs(self) -> None:
+    def initialize_dirs(self, logger: logging.Logger) -> None:
+        if Options.no_keep and self.cwd.exists():
+            logger.critical(f"clearing {self.cwd} since --no-keep was passed")
+            utils.rm_part_dir(self.cwd, Options.no_keep)
         if not self.parts_dir.exists():
             self.parts_dir.mkdir(parents=True, exist_ok=True)
             Options.logger.info(f"created dir {str(self.parts_dir)!r}")
 
-    def check_completed_download(self, mime_type: Optional[str] = None, logger: logging.Logger = None) -> None:
-        if (f := self.get_completed_filename(mime_type)).exists():
+    def check_completed_download(self, logger: logging.Logger = None) -> None:
+        if (f := self.complete_download_filename).exists():
             if logger:
                 logger.ok(f"already downloaded {str(f)} {utils.format_file_size(f.stat().st_size)}")
             return True
         return False
 
-    def get_completed_filename(self, mime_type: Optional[str] = None) -> Path:
-        complete_fp = Path()
-        if mime_type:
-            if mime_type[0] != ".":
-                raise ValueError(f"expects a . in mime_type {mime_type!r}")
-            return Options.complete_dir / (str(self.__completed_file__) + mime_type)
-        return self.complete_download
+    def set_mime_type(self, mime_type: str):
+        if mime_type and mime_type[0] != ".":
+            raise ValueError(f"expects a . in mime_type {mime_type!r}")
+        self.mime_type = mime_type
 
     @staticmethod
     def hash_url(url: str) -> str:
         return hashlib.md5(url.encode("utf-8")).hexdigest()
 
-    @property
-    def fully_downloaded(self) -> bool:
-        """
-        return: whether a file is completely downloaded
-        """
-        return self.complete_download.exists()
 
-
-class Svdwr:
+class _Wr:
     """
+    synced write && read
     for sync reading and  sync to the writing to the terminal
     MainThread is probably running this instance
     """
@@ -518,10 +516,14 @@ class Svdwr:
         self.__future_message__ = None
         self.logger = Options.logger
         self.logger.info("𝘚𝘝𝘋")
+        self.__check_dirs__()
+
+    def __check_dirs__(self) -> None:
         if Options.clean:
             self.logger.critical(f"rmdir {Options.parts_dir} since --clean was set")
-            utils.rm_part_dir(Options.parts_dir, not Options.clean)
-        self.__write__()
+            utils.rm_part_dir(Options.parts_dir, Options.clean)
+        if (s := utils.get_folder_size(Options.parts_dir)) > 1024 * 1024 * 1024:
+            self.logger.critical(f"parts folder {Options.parts_dir} > 1GB consider removing to save space  with `svd --clean`, currently  {utils.format_file_size(s)}")
 
     @property
     def __expects_message__(self) -> bool:
@@ -539,10 +541,10 @@ class Svdwr:
             raise exceptions.HelpExit("text too long. some terminal will cut the text. Save text in a file  'f' and use `svd -i f` instead")
         return i
 
-    def __write__(self) -> None:
+    def listen(self) -> None:
         while 1:
             try:
-                i = Options.get_input_from_file() or Svdwr.get_input()
+                i = Options.get_input_from_file() or _Wr.get_input()
                 if self.__expects_message__:
                     self.__set_message__(i)
                     continue
@@ -561,9 +563,6 @@ class Svdwr:
             except exceptions.HelpExit as e:
                 self.logger.critical(e.msg)
                 sys.exit(1)
-            except exceptions.CannotContinue as e:
-                self.logger.error(e.msg)
-                sys.exit(1)
             except Exception as e:
                 if self.logger.level == logging.DEBUG:
                     raise
@@ -572,13 +571,20 @@ class Svdwr:
             except KeyboardInterrupt:
                 return
 
-    def read(self) -> str:
+    def read(self, text: Optional[str] = None) -> str:
+        if threading.current_thread() is threading.main_thread():
+            with self.__lock__:
+                if text:
+                    print(text)
+                return Wr.get_input()
         if self.__expects_message__:
             self.__future_message__.result()
-            return self.read()
+            return self.read(text)
         else:
             self.__future_message__ = Future()
             with self.__lock__:
+                if text:
+                    print(text)
                 return self.__future_message__.result()
 
 
@@ -586,4 +592,5 @@ Options = get_options()
 from . import rlogger
 
 if __name__ == "__main__":
-    Svdwr(Downloader())
+    Wr = _Wr(Downloader())
+    Wr.listen()
