@@ -8,17 +8,13 @@ import urllib3
 from .options import get_options
 from . import utils
 from typing import Callable
-import threading
 
-from .rlogger import get_adapter
 import re
 from . import exceptions
 from typing import NamedTuple
 
-from enum import Enum, unique
-from typing import Optional, Tuple
+from typing import Optional
 from urllib3 import HTTPHeaderDict
-import time
 
 Options = get_options()
 
@@ -118,7 +114,7 @@ def check_clcr(
     rc_cr: received content range
     """
     if cl is not None and rc_cr and cl != rc_cr.total:
-        logger.critical(f"content length from 'HEAD' is {cl} but content range indicate it is {cr.total}  from {cr}")
+        logger.critical(f"content length from 'HEAD' is {cl} but content range indicate it is {rc_cr.total}  from {rc_cr}")
     if rq_r != rc_cr:
         logger.critical(f"requested range != received content range {rq_r} != {rc_cr}")
         return False
@@ -210,7 +206,7 @@ def download(
         logger.debug(f"downloading range {headers['range']}")
     cr, cl, r = make_request("GET", url, headers=headers, logger=logger, allow_mime_text=False, preload_content=preload_content, enforce_content_length=preload_content)
     if not check_clcr(cl1, rq_r, cl, cr, logger):
-        raise exceptions.DownloadError(f"cl/cr errors while downloading {file_path} try clearing parts folder with  and setting part size to max using svd --clean -s 1000TB")
+        raise exceptions.DownloadError(f"cl/cr errors while downloading {file_path} try clearing parts folder with  and setting part size to max using svd --no-keep -s 1000TB")
 
     if not preload_content:
         with file_path.open("wb") as wrt:
@@ -220,7 +216,7 @@ def download(
                 if not chunk:
                     break
                 wrt.write(chunk)
-                logger.info(progress_formatter(len(chunk)))
+                logger.debug(progress_formatter(len(chunk)))
     else:
         r.data
         with file_path.open("wb") as wrt:

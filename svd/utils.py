@@ -34,19 +34,6 @@ def join_parts(dest: Path, src_dir: Path) -> None:
                 shutil.copyfileobj(sfd, wrt)
 
 
-def get_range_from_headers(headers):
-    range_header = request_headers.get("Range", None)
-    if range_header:
-        range_value = range_header.split("=")[1]
-        byte_range = range_value.split("-")
-        try:
-            start_byte = int(byte_range[0])
-            end_byte = int(byte_range[1]) if byte_range[1] else None
-            return [start_byte, end_byte] if end_byte is not None else [start_byte]
-        except ValueError:
-            return None
-    return None
-
 
 def format_time(seconds):
     m, s = divmod(int(seconds), 60)
@@ -63,22 +50,10 @@ def format_bandwidth(bps):
     return f"{int(bps):,d}{units[i]}bps"
 
 
-def get_part_name_from_content_range(content_range: tuple[int]) -> str:
-    return f"{'-'.join(tuple(map(str,content_range)))}"
-
 
 def rm_part_dir(dir_: str, no_keep: bool) -> None:
     if no_keep:
         shutil.rmtree(dir_)
-
-
-def child_read_stdin() -> str:
-    assert not Data.MESSAGE_EVENT.is_set()
-    Data.MESSAGE_QUEUE.put("/stdin")
-    Data.MESSAGE_EVENT.wait()
-    x = Data.MESSAGE_QUEUE.get_nowait()
-    Data.MESSAGE_EVENT.clear()
-    return x
 
 
 def get_base_url(url: str) -> str:

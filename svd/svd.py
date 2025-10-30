@@ -1,32 +1,27 @@
-import argparse
 import hashlib
 import itertools
 import json
 import logging
-import multiprocessing
 import os
 import re
-import select
 import shutil
-import signal
 import subprocess
 import sys
-import tempfile
-import textwrap
 import threading
 import time
 import xml.etree.ElementTree as ET
-from concurrent.futures import Future, ThreadPoolExecutor
-from enum import Enum, unique
+from concurrent.futures import Future
 from io import StringIO
 from pathlib import Path
-from typing import Callable, NewType, Optional
-
-import urllib3
+from typing import Optional
+import time 
 from urllib3 import HTTPHeaderDict
 
 from . import exceptions, request, utils
 from .options import get_options
+
+Options = get_options()
+from . import rlogger
 
 
 class HLS:
@@ -120,7 +115,7 @@ class Raw:
                     if part_size > ppart_size:
                         raise exceptions.CorruptedPartsDir(f"malformed part file range name for {file}; actual partfile size" f"{part_size} is greather than max indicated {ppart_size}")
                     v[1] = v[0] + part_size - 1
-                    new_part_name = djob.fo.parts_dir / utils.get_part_name_from_content_range(v)
+                    new_part_name = djob.fo.parts_dir / f'{v[0]}-{v[1]}'
                     logger.critical(f"renaming part file {file} to {new_part_name} since its size is {part_size}  and not {ppart_size}")
                     if (new_part_name).exists():
                         raise exceptions.CorruptedPartsDir(f"cannot rename. content range overlap. same filename {new_part_name} exists")
@@ -288,10 +283,7 @@ class FbIg:
         logger = rlogger.get_adapter(Options.logger, "LIVE")
         logger.debug("live facebook/instagram")
         formats = FbIg.parse_xml(djob.others["xmlData"], logger)
-        # choice = FbIg.get_desired_format_choice(formats,logger)
-
-        choice={ 'audio': {'mimetype': 'audio/mp4', 'file_extension': 'mp4', 'bandwidth': 131054, 'init': '../dash-lp-ld-a/1279123497563911_0-init.m4a?ms=m_C&sc_t=1&ccb=2-4', 'media_number': 2915, 'media': '../ID/dash-lp-ld-a/1279123497563911_0-$Number$.m4a?ms=m_C&sc_t=1&ccb=2-4'}}
-
+        choice = FbIg.get_desired_format_choice(formats,logger)
 
         djob.jlen = len(choice)
         # set final file extension based on choice
@@ -324,7 +316,7 @@ class FbIg:
         current_media_number = [djob.jobs[k]["media_number"] for k in list(djob.jobs)]
         if len(current_media_number) == 2:
             if current_media_number[0] != current_media_number[1]:
-                log(f"media_number mismatch {current_media_number}. endfile could be corrupted. defaulting to most minimum {current_media_number:=min(current_media_number)}")
+                logger.critical(f"media_number mismatch {current_media_number}. endfile could be corrupted. defaulting to most minimum {current_media_number:=min(current_media_number)}")
             current_media_number = min(current_media_number)
         else:
             current_media_number = current_media_number[0]
@@ -461,7 +453,9 @@ class Downloader:
         djob.fo.initialize_dirs(self.logger)
         with (djob.fo.cwd / "info").open("w") as wrt:
             wrt.write(json.dumps(data))
+        t=time.perf_counter()
         f(djob)
+        self.logger.ok(f'took {utils.format_time(time.perf_counter()-t)}')
 
 
 class FileObject:
@@ -515,7 +509,6 @@ class _Wr:
         self.__lock__ = rlogger._log_lock
         self.__future_message__ = None
         self.logger = Options.logger
-        self.logger.info("𝘚𝘝𝘋")
         self.__check_dirs__()
 
     def __check_dirs__(self) -> None:
@@ -536,7 +529,7 @@ class _Wr:
 
     @staticmethod
     def get_input() -> str:
-        i = input("> ")
+        i = input(">>> ")
         if len(i) > 4096 - 1 - 1:
             raise exceptions.HelpExit("text too long. some terminal will cut the text. Save text in a file  'f' and use `svd -i f` instead")
         return i
@@ -588,9 +581,10 @@ class _Wr:
                 return self.__future_message__.result()
 
 
-Options = get_options()
-from . import rlogger
-
-if __name__ == "__main__":
+def main():
+    global Wr
     Wr = _Wr(Downloader())
     Wr.listen()
+    
+if __name__ == "__main__":
+    main()

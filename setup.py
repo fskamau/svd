@@ -1,6 +1,5 @@
 from setuptools import setup, find_packages
 
-
 setup(
     name="svd",
     version="0.1.0",
@@ -11,7 +10,7 @@ setup(
     py_modules=['svd'],
     entry_points={
         'console_scripts':[
-            'svd=svd:run',
+            'svd=svd:main',
             ]
         }
 )
