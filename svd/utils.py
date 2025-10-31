@@ -10,7 +10,7 @@ import mimetypes
 from urllib3._collections import HTTPHeaderDict
 import threading
 import tempfile
-
+from ._request import Range
 
 def format_file_size(bytes_: int) -> str:
     sizes = " KMGT"
@@ -90,3 +90,46 @@ def get_folder_size(path:Path) -> int:
         except (FileNotFoundError, PermissionError):
             continue
     return total
+
+
+def get_missing_ranges( byte_end:int, part_size, pcrs: Optional[tuple[tuple[int,int]]] = None,byte_start:int=0) -> tuple['Range']:
+    ranges = []
+    if pcrs :
+        for i, x in enumerate(pcrs):
+            if x[0] == byte_start:
+                byte_start = x[1] + 1
+            else:#some backward bytes are missing (byte_start...x[0])
+                [ranges.append(x) for x in get_missing_content_ranges(byte_start,x[0], part_size, None)]
+                byte_start = x[1] + 1
+    while byte_start < byte_end:
+        end = min(byte_start + part_size - 1, byte_end - 1)
+        ranges.append((byte_start, end))
+        byte_start = end + 1
+    return [Range(*c) for c in ranges]
+
+
+def update_part_file(f:Path,logger:logging.Logger)->Optional[tuple[tuple[int,int],int]]:
+    """
+    update the name of an existing part file if its name does not reflect its size and
+    return the new name
+    else delete the file if its empty and return None
+    """
+    if not (v := re.search(r"(\d+)-(\d+)", f.name)):
+        raise FileExistsError(f"other files exists in parts dir {f.parent} e.g {f!r}. not continuing")
+    v = list(map(int, [v.group(1), v.group(2)]))
+    if v[0] >= v[1]:
+        raise exceptions.CorruptedPartsDir(f"malformed part file name {f!r}")
+    if (fsize := (f.stat().st_size)) == 0:
+        logger.debug(f"removing part file {f} since size is 0")
+        f.unlink()
+        return None
+    if fsize != (fname_size := (v[1] - v[0] + 1)):
+        if fsize > fname_size:
+            raise exceptions.CorruptedPartsDir(f"malformed part file range name for {f}; actual partfile size" f"{fsize} is greather than max indicated {fname_size}")
+        v[1] = v[0] + fsize - 1
+        new_part_name = f'{v[0]}-{v[1]}'
+        logger.debug(f"renaming part file {f} to {new_part_name} since its size is {fsize} and not {fname_size}")
+        if new_part_name.exists():
+            raise exceptions.CorruptedPartsDir(f"cannot rename. content range overlap. same filename {new_part_name} exists")
+        f.rename(new_part_name)
+    return v,fsize

@@ -14,7 +14,7 @@ from concurrent.futures import Future
 from io import StringIO
 from pathlib import Path
 from typing import Optional
-import time 
+import time
 from urllib3 import HTTPHeaderDict
 
 from . import exceptions, request, utils
@@ -82,71 +82,68 @@ class HLS:
 
 
 class Raw:
+
     def download(djob: "Djob"):
         djob.headers["range"] = "bytes=0-"
         logger = rlogger.get_adapter(Options.logger, Raw.__name__)
         if djob.fo.check_completed_download(logger=logger):
             return
-        content_range, content_length, r = request.make_request("GET", djob.url, djob.headers, logger, allow_mime_text=False, preload_content=False)  # some servers will return 403 with 'HEAD'
+        content_range, content_length, r = request.make_request(
+            "GET", djob.url, djob.headers, logger, allow_mime_text=False, preload_content=False
+        )  # some servers will return 403 with 'HEAD' since 
         r.release_conn()
         logger.debug(f"from HEAD request: {request.summarize_headers(r.headers)}")
         if content_range.total != content_length:
             logger.debug(f"content_length {content_length} != content_range total {content_range}")
         size_present = 0
-        present_content_ranges = []
+        pcrs = []
         pdir = str(djob.fo.parts_dir)
 
+        if content_length is None:#e.g tiktok lives
+            if any(djob.fo.parts_dir.iterdir()):
+                raise FileExistsError("content length is None but part files exists. cannot correcly identify missing data. remove it with --no-keep")
+            logger.critical("no content range, downloading till server closes connection")
+            Options.exec.submit(
+                lambda: request.download(
+                    djob.url,
+                    djob.headers,
+                    djob.fo.complete_download_filename,
+                    rlogger.get_adapter(logger, f"no content length"),
+                    preload_content=False,
+                )
+            ).result()
         if any(djob.fo.parts_dir.iterdir()):
             logger.debug("checking already donwloaded parts")
             if content_length is None:
                 logger.critical(f"parts exists but content_length is None. cannot assume the server will return correct content ranges; remove {pdir} manually")
-            ld = os.listdir(djob.fo.parts_dir)
-            for file in ld:
-                if not (v := re.search(r"(\d+)-(\d+)", file)):
-                    raise FileExistsError(f"other files exists in parts dir {pdir} e.g {file!r}. not continuing")
-                v = list(map(int, [v.group(1), v.group(2)]))
-                if v[0] >= v[1]:
-                    raise exceptions.CorruptedPartsDir(f"malformed part file name {file!r}")
-                if (part_size := (part_file := (djob.fo.parts_dir / file)).stat().st_size) == 0:
-                    logger.debug(f"removing part file {file!r} since size is 0")
-                    part_file.unlink()
-                    continue
-                if part_size != (ppart_size := (v[1] - v[0] + 1)):
-                    if part_size > ppart_size:
-                        raise exceptions.CorruptedPartsDir(f"malformed part file range name for {file}; actual partfile size" f"{part_size} is greather than max indicated {ppart_size}")
-                    v[1] = v[0] + part_size - 1
-                    new_part_name = djob.fo.parts_dir / f'{v[0]}-{v[1]}'
-                    logger.critical(f"renaming part file {file} to {new_part_name} since its size is {part_size}  and not {ppart_size}")
-                    if (new_part_name).exists():
-                        raise exceptions.CorruptedPartsDir(f"cannot rename. content range overlap. same filename {new_part_name} exists")
-                    part_file.rename(new_part_name)
-                present_content_ranges.append(v)
-                size_present += part_size
-            present_content_ranges = sorted(present_content_ranges, key=lambda x: x[0])
-            present_content_ranges_ = []
-            if len(present_content_ranges) > 1:
-                for i, pcr in enumerate(present_content_ranges):
+            for file in djob.fo.parts_dir.iterdir():
+                if v := utils.update_part_file(file, logger):
+                    pcrs.append(v[0])
+                    size_present += v[1]
+            if content_length < size_present:
+                raise exceptions.CorruptedPartsDir(f"content_length = {content_length} < size_present {size_present}")
+            pcrs = sorted(pcrs, key=lambda x: x[0])
+            pcrs_ = []
+            if len(pcrs) > 1:
+                for i, p in enumerate(pcrs):
                     if i > 0:
-                        if pcr[0] <= present_content_ranges[i - 1][0] or pcr[0] <= present_content_ranges[i - 1][1]:
-                            raise exceptions.CorruptedPartsDir(f"content range overlap  {present_content_ranges[i-1]} / {pcr} ")
+                        if p[0] <= pcrs[i - 1][0] or p[0] <= pcrs[i - 1][1]:
+                            raise exceptions.CorruptedPartsDir(f"content range overlap  {pcrs[i-1]} / {p} ")
                     else:
-                        present_content_ranges_.append(pcr)
+                        pcrs_.append(p)
                         continue
-                    if present_content_ranges_[-1][-1] + 1 == pcr[0]:
-                        present_content_ranges_[-1][-1] = pcr[1]
+                    if pcrs_[-1][-1] + 1 == p[0]:
+                        pcrs_[-1][-1] = p[1]
                     else:
-                        present_content_ranges_.append(pcr)
+                        pcrs_.append(p)
             else:
-                present_content_ranges_ = present_content_ranges
-            present_content_ranges = present_content_ranges_
-            logger.info(f"total size of parts present : {utils.format_file_size(size_present)}")
-            if content_range is not None:
-                if content_length < size_present:
-                    raise exceptions.CorruptedPartsDir(f"content_length = {content_length:,d} < size_present {size_present:,d}")
-        content_ranges = request.get_content_ranges(content_length, Options.part_size, present_content_ranges)
+                pcrs_ = pcrs
+            pcrs = pcrs_
+
+        logger.info(f"total size of parts present : {utils.format_file_size(size_present)}")
+        content_ranges = utils.get_missing_ranges(byte_end=content_length,part_size= Options.part_size, pcrs=pcrs)
         logger.info(f"downloading  {utils.format_file_size(content_length-size_present)}")
         logger.debug(f"<JOB> (jobs={len(content_ranges)} jobs {content_ranges})")
-
         [
             _
             for _ in Options.exec.map(
@@ -168,8 +165,6 @@ class Raw:
         utils.rm_part_dir(djob.fo.parts_dir, Options.no_keep)
 
 
-
-
 class MaybeMetaAlteredCodeException(NotImplementedError):
     pass
 
@@ -184,26 +179,26 @@ class FbIg:
     MEDIA_NUMBER_STR = "$Number$"
     INIT_FILENAME = "0"  # for easy sorting cat $(ls -v) > out.mp4
     INFINITY = "∞"
-    STATUS_CODE_ERROR_COUNT = 1
-    STATUS_CODE_ERROR_SLEEP = 0
+    STATUS_CODE_ERROR_COUNT = 2
+    STATUS_CODE_ERROR_SLEEP = 5
     assert STATUS_CODE_ERROR_COUNT > 0
 
-    def join(djob:'Djob', logger:logging.Logger):
+    def join(djob: "Djob", logger: logging.Logger):
         paths = []
-        complete=djob.fo.complete_download_filename
+        complete = djob.fo.complete_download_filename
         for f in djob.jobs:
-            p=djob.fo.parts_dir/f
+            p = djob.fo.parts_dir / f
             try:
-                files = sorted(p.iterdir(),key=lambda path: int(path.name))  # will raise ValueError if not numeric
-                part_file = p/f
+                files = sorted(p.iterdir(), key=lambda path: int(path.name))  # will raise ValueError if not numeric
+                part_file = p / f
                 logger.ok(part_file)
                 with part_file.open("wb") as wrt:
                     for part in files:
-                        shutil.copyfileobj((p/part).open('rb'), wrt)
+                        shutil.copyfileobj((p / part).open("rb"), wrt)
                 if djob.jlen == 1:
                     out_file = complete
                 else:
-                    paths.append(out_file := (p/f"{complete.name}"))
+                    paths.append(out_file := (p / f"{complete.name}"))
                 try:
                     subprocess.check_output(["ffmpeg", "-i", part_file, "-c", "copy", out_file])
                     part_file.unlink()
@@ -271,7 +266,10 @@ class FbIg:
                     if int(st[0].attrib["FBPredictedMediaStartNumber"]) != FbIg.DEFAULT_PREDICTED_MEDIA_START:
                         raise MaybeMetaAlteredCodeException(f"different DEFAULT_PREDICTED_MEDIA_START. dump {rd} {ET.tostring(rep).decode()}")
                 else:
-                    logger.critical(f"attribute FBPredictedMediaStartNumber does not exist in mime {rd['mimetype']}. " f"defaulting to '{FbIg.DEFAULT_PREDICTED_MEDIA_START}'")
+                    logger.critical(
+                        f"attribute FBPredictedMediaStartNumber does not exist in mime {rd['mimetype']}. "
+                        f"defaulting to '{FbIg.DEFAULT_PREDICTED_MEDIA_START}'"
+                    )
                 reps.append(rd)
             return reps
         except AttributeError as e:
@@ -283,7 +281,7 @@ class FbIg:
         logger = rlogger.get_adapter(Options.logger, "LIVE")
         logger.debug("live facebook/instagram")
         formats = FbIg.parse_xml(djob.others["xmlData"], logger)
-        choice = FbIg.get_desired_format_choice(formats,logger)
+        choice = FbIg.get_desired_format_choice(formats, logger)
 
         djob.jlen = len(choice)
         # set final file extension based on choice
@@ -316,7 +314,9 @@ class FbIg:
         current_media_number = [djob.jobs[k]["media_number"] for k in list(djob.jobs)]
         if len(current_media_number) == 2:
             if current_media_number[0] != current_media_number[1]:
-                logger.critical(f"media_number mismatch {current_media_number}. endfile could be corrupted. defaulting to most minimum {current_media_number:=min(current_media_number)}")
+                logger.critical(
+                    f"media_number mismatch {current_media_number}. endfile could be corrupted. defaulting to most minimum {current_media_number:=min(current_media_number)}"
+                )
             current_media_number = min(current_media_number)
         else:
             current_media_number = current_media_number[0]
@@ -325,33 +325,32 @@ class FbIg:
         for x in djob.jobs:
             djob.jobs[x]["current_task"] = FbIg.DEFAULT_PREDICTED_MEDIA_START
 
-
         def generate_urls():
             while 1:
                 for f in djob.jobs:
                     current_task = djob.jobs[f]["current_task"]
                     djob.jobs[f]["current_task"] += 1
-                    yield {'url':djob.jobs[f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"),'f':f,'current_task':str(current_task)}
-
+                    yield {"url": djob.jobs[f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"), "f": f, "current_task": str(current_task)}
 
         def download_with_thread_local_vars(t):
             request.download(
-                t['url'],
+                t["url"],
                 djob.headers,
-                djob.fo.parts_dir/t['f']/t['current_task'],
-                rlogger.get_adapter(logger,f"{t['f']}@{t['current_task']}/{current_media_number} {utils.get_thread_name()}"),
+                djob.fo.parts_dir / t["f"] / t["current_task"],
+                rlogger.get_adapter(logger, f"{t['f']}@{t['current_task']}/{current_media_number} {utils.get_thread_name()}"),
                 progress_formatter=request.ProgressFormatter.default(),
-                preload_content=True                
+                preload_content=True,
             )
-            
+
         genv = generate_urls()
         # we use threads to download whole stream till last media. then change to only 1 thread to prevent 404
         logger.info("downloading from livestream start to now")
-        if(current_media_number < FbIg.DEFAULT_PREDICTED_MEDIA_START):
+        if current_media_number < FbIg.DEFAULT_PREDICTED_MEDIA_START:
             raise RuntimeError("current_media_number < FbIg.DEFAULT_PREDICTED_MEDIA_START")
-        tasks=[next(genv) for _ in range((current_media_number - FbIg.DEFAULT_PREDICTED_MEDIA_START))]
-        [_ for _ in Options.exec.map(download_with_thread_local_vars,tasks)]
+        tasks = [next(genv) for _ in range((current_media_number - FbIg.DEFAULT_PREDICTED_MEDIA_START))]
+        [_ for _ in Options.exec.map(download_with_thread_local_vars, tasks)]
         logger.info("downloading from now till the stream ends.")
+
         # we now use the mainthread infinetly. receiveing error status code might be the end of stream
         def one_thread():
             while 1:
@@ -370,6 +369,7 @@ class FbIg:
                     logger.info(f"ecountered StatusCodeException with status code {e.r.status}; saving file now")
                     FbIg.join(djob, logger)
                     break
+
         Options.exec.submit(one_thread).result()
 
     def init_dirs(djob: "Djob", logger: logging.Logger):
@@ -453,9 +453,9 @@ class Downloader:
         djob.fo.initialize_dirs(self.logger)
         with (djob.fo.cwd / "info").open("w") as wrt:
             wrt.write(json.dumps(data))
-        t=time.perf_counter()
+        t = time.perf_counter()
         f(djob)
-        self.logger.ok(f'took {utils.format_time(time.perf_counter()-t)}')
+        self.logger.ok(f"took {utils.format_time(time.perf_counter()-t)}")
 
 
 class FileObject:
@@ -516,7 +516,9 @@ class _Wr:
             self.logger.critical(f"rmdir {Options.parts_dir} since --clean was set")
             utils.rm_part_dir(Options.parts_dir, Options.clean)
         if (s := utils.get_folder_size(Options.parts_dir)) > 1024 * 1024 * 1024:
-            self.logger.critical(f"parts folder {Options.parts_dir} > 1GB consider removing to save space  with `svd --clean`, currently  {utils.format_file_size(s)}")
+            self.logger.critical(
+                f"parts folder {Options.parts_dir} > 1GB consider removing to save space  with `svd --clean`, currently  {utils.format_file_size(s)}"
+            )
 
     @property
     def __expects_message__(self) -> bool:
@@ -585,6 +587,7 @@ def main():
     global Wr
     Wr = _Wr(Downloader())
     Wr.listen()
-    
+
+
 if __name__ == "__main__":
     main()
