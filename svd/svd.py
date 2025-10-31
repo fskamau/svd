@@ -536,7 +536,7 @@ class _Wr:
             raise exceptions.HelpExit("text too long. some terminal will cut the text. Save text in a file  'f' and use `svd -i f` instead")
         return i
 
-    def listen(self) -> None:
+    def repl(self) -> None:
         while 1:
             try:
                 i = Options.get_input_from_file() or _Wr.get_input()
@@ -555,6 +555,8 @@ class _Wr:
                     self.__downloader__.download(i)
                 except json.JSONDecodeError as e:
                     self.logger.error(f"cannot parse input json; {repr(e)}")
+            except (KeyboardInterrupt,EOFError):
+                return                    
             except exceptions.HelpExit as e:
                 self.logger.critical(e.msg)
                 sys.exit(1)
@@ -562,9 +564,8 @@ class _Wr:
                 if self.logger.level == logging.DEBUG:
                     raise
                 self.logger.error(e)
-                sys.exit(1)
-            except KeyboardInterrupt:
-                return
+                sys.exit(1) 
+
 
     def read(self, text: Optional[str] = None) -> str:
         if threading.current_thread() is threading.main_thread():
@@ -586,7 +587,7 @@ class _Wr:
 def main():
     global Wr
     Wr = _Wr(Downloader())
-    Wr.listen()
+    Wr.repl()
 
 
 if __name__ == "__main__":
