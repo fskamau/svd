@@ -103,64 +103,70 @@ class Raw:
             if any(djob.fo.parts_dir.iterdir()):
                 raise FileExistsError("content length is None but part files exists. cannot correcly identify missing data. remove it with --no-keep")
             logger.critical("no content range, downloading till server closes connection")
+            def format_progress(x,y):
+                if y is not None:
+                    x.downloaded+=y
+                return f"saved {utils.format_file_size(x.downloaded)}"
             Options.exec.submit(
                 lambda: request.download(
                     djob.url,
                     djob.headers,
                     djob.fo.complete_download_filename,
-                    rlogger.get_adapter(logger, f"no content length"),
+                    logger=rlogger.get_adapter(logger, f"no content length"),
+                    progress_formatter=request.ProgressFormatter(None,format_progress),
                     preload_content=False,
                 )
             ).result()
-        if any(djob.fo.parts_dir.iterdir()):
-            logger.debug("checking already donwloaded parts")
-            if content_length is None:
-                logger.critical(f"parts exists but content_length is None. cannot assume the server will return correct content ranges; remove {pdir} manually")
-            for file in djob.fo.parts_dir.iterdir():
-                if v := utils.update_part_file(file, logger):
-                    pcrs.append(v[0])
-                    size_present += v[1]
-            if content_length < size_present:
-                raise exceptions.CorruptedPartsDir(f"content_length = {content_length} < size_present {size_present}")
-            pcrs = sorted(pcrs, key=lambda x: x[0])
-            pcrs_ = []
-            if len(pcrs) > 1:
-                for i, p in enumerate(pcrs):
-                    if i > 0:
-                        if p[0] <= pcrs[i - 1][0] or p[0] <= pcrs[i - 1][1]:
-                            raise exceptions.CorruptedPartsDir(f"content range overlap  {pcrs[i-1]} / {p} ")
-                    else:
-                        pcrs_.append(p)
-                        continue
-                    if pcrs_[-1][-1] + 1 == p[0]:
-                        pcrs_[-1][-1] = p[1]
-                    else:
-                        pcrs_.append(p)
-            else:
-                pcrs_ = pcrs
-            pcrs = pcrs_
-
-        logger.info(f"total size of parts present : {utils.format_file_size(size_present)}")
-        content_ranges = utils.get_missing_ranges(byte_end=content_length,part_size= Options.part_size, pcrs=pcrs)
-        logger.info(f"downloading  {utils.format_file_size(content_length-size_present)}")
-        logger.debug(f"<JOB> (jobs={len(content_ranges)} jobs {content_ranges})")
-        [
-            _
-            for _ in Options.exec.map(
-                lambda x: request.download(
-                    djob.url,
-                    djob.headers,
-                    djob.fo.parts_dir / x[1].as_filename,
-                    rlogger.get_adapter(logger, f"job {x[0]+1}/{len(content_ranges)} {utils.get_thread_name()}"),
-                    x[1],
-                    content_length,
-                    progress_formatter=request.ProgressFormatter(content_length - size_present),
-                    preload_content=False,
-                ),
-                enumerate(content_ranges),
-            )
-        ]
-        utils.join_parts(djob.fo.complete_download_filename, djob.fo.parts_dir)
+        else:
+            if any(djob.fo.parts_dir.iterdir()):
+                logger.debug("checking already donwloaded parts")
+                if content_length is None:
+                    logger.critical(f"parts exists but content_length is None. cannot assume the server will return correct content ranges; remove {pdir} manually")
+                for file in djob.fo.parts_dir.iterdir():
+                    if v := utils.update_part_file(file, logger):
+                        pcrs.append(v[0])
+                        size_present += v[1]
+                if content_length < size_present:
+                    raise exceptions.CorruptedPartsDir(f"content_length = {content_length} < size_present {size_present}")
+                pcrs = sorted(pcrs, key=lambda x: x[0])
+                pcrs_ = []
+                if len(pcrs) > 1:
+                    for i, p in enumerate(pcrs):
+                        if i > 0:
+                            if p[0] <= pcrs[i - 1][0] or p[0] <= pcrs[i - 1][1]:
+                                raise exceptions.CorruptedPartsDir(f"content range overlap  {pcrs[i-1]} / {p} ")
+                        else:
+                            pcrs_.append(p)
+                            continue
+                        if pcrs_[-1][-1] + 1 == p[0]:
+                            pcrs_[-1][-1] = p[1]
+                        else:
+                            pcrs_.append(p)
+                else:
+                    pcrs_ = pcrs
+                pcrs = pcrs_
+    
+            logger.info(f"total size of parts present : {utils.format_file_size(size_present)}")
+            content_ranges = utils.get_missing_ranges(byte_end=content_length,part_size= Options.part_size, pcrs=pcrs)
+            logger.info(f"downloading  {utils.format_file_size(content_length-size_present)}")
+            logger.debug(f"<JOB> (jobs={len(content_ranges)} jobs {content_ranges})")
+            [
+                _
+                for _ in Options.exec.map(
+                    lambda x: request.download(
+                        djob.url,
+                        djob.headers,
+                        djob.fo.parts_dir / x[1].as_filename,
+                        rlogger.get_adapter(logger, f"job {x[0]+1}/{len(content_ranges)} {utils.get_thread_name()}"),
+                        x[1],
+                        content_length,
+                        progress_formatter=request.ProgressFormatter(content_length - size_present),
+                        preload_content=False,
+                    ),
+                    enumerate(content_ranges),
+                )
+            ]
+            utils.join_parts(djob.fo.complete_download_filename, djob.fo.parts_dir)
         logger.ok(f"Download done {djob.fo.complete_download_filename} size {utils.format_file_size(djob.fo.complete_download_filename.stat().st_size)}")
         utils.rm_part_dir(djob.fo.parts_dir, Options.no_keep)
 
@@ -330,14 +336,15 @@ class FbIg:
                 for f in djob.jobs:
                     current_task = djob.jobs[f]["current_task"]
                     djob.jobs[f]["current_task"] += 1
-                    yield {"url": djob.jobs[f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"), "f": f, "current_task": str(current_task)}
+                    yield {"url": djob.jobs[f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"), "f": f, "current_task": current_task}
 
         def download_with_thread_local_vars(t):
+            end=current_media_number if t['current_task']<=current_media_number else FbIg.INFINITY
             request.download(
                 t["url"],
                 djob.headers,
-                djob.fo.parts_dir / t["f"] / t["current_task"],
-                rlogger.get_adapter(logger, f"{t['f']}@{t['current_task']}/{current_media_number} {utils.get_thread_name()}"),
+                djob.fo.parts_dir / t["f"] / str(t["current_task"]),
+                rlogger.get_adapter(logger, f"{t['f']}@{t['current_task']}/{end} {utils.get_thread_name()}"),
                 progress_formatter=request.ProgressFormatter.default(),
                 preload_content=True,
             )
@@ -549,9 +556,10 @@ class _Wr:
                     print(f"use q or . to exit, 'svd -h' for help or  paste from clipboard")
                     continue
                 try:
-                    i = json.loads(i)
+                    inp,i = i,json.loads(i)
                     if not isinstance(i, dict):
                         raise json.JSONDecodeError(f"expected  a dict got {type(i)}")
+                    print(f'\n{inp}\n')
                     self.__downloader__.download(i)
                 except json.JSONDecodeError as e:
                     self.logger.error(f"cannot parse input json; {repr(e)}")

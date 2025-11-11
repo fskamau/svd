@@ -127,7 +127,7 @@ def update_part_file(f:Path,logger:logging.Logger)->Optional[tuple[tuple[int,int
         if fsize > fname_size:
             raise exceptions.CorruptedPartsDir(f"malformed part file range name for {f}; actual partfile size" f"{fsize} is greather than max indicated {fname_size}")
         v[1] = v[0] + fsize - 1
-        new_part_name = f'{v[0]}-{v[1]}'
+        new_part_name = f.parent/f'{v[0]}-{v[1]}'
         logger.debug(f"renaming part file {f} to {new_part_name} since its size is {fsize} and not {fname_size}")
         if new_part_name.exists():
             raise exceptions.CorruptedPartsDir(f"cannot rename. content range overlap. same filename {new_part_name} exists")

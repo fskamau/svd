@@ -48,7 +48,7 @@ def download(
     logger: logging.Logger,
     rq_r: Optional[tuple[int]] = Range.default(),
     cl1: Optional[int] = None,
-    progress_formatter: Optional[ProgressFormatter] = ProgressFormatter.default,
+    progress_formatter: Optional[ProgressFormatter] = ProgressFormatter.default(),
     preload_content: Optional[bool] = False,
 ):
     """

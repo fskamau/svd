@@ -28,3 +28,8 @@ class CorruptedPartsDir(Exception):
 
 class DownloadError(Exception):
     pass
+
+
+
+class HLSError(Exception):
+    pass
