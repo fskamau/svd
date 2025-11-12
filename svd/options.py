@@ -66,7 +66,7 @@ class _Options:
                 self.filename = None
                 return r
             except Exception as e:
-                raise exceptions.SVDHelpExit(f"cannot read file  {str(self.filename)!r} supplied  through -i;  {repr(e)} ")
+                raise FileNotFoundError(f"cannot read file  {str(self.filename)!r} supplied  through -i;  {repr(e)} ")
 
     @staticmethod
     def _get_bytes_from_str(s: str):        
