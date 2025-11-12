@@ -20,10 +20,6 @@
 
 2. Since creating this json could be tedious, a simple svd browser extension
     is provided [here](https://github.com/fskamau/svd-extension)
-	
-3. The program will continously read stdin for control signals.
--  Passing / or c will read clipboard contents and treat them as json.
--  passing . or q will quit immediately.
 
 ## Dependencies
 This package depends on ffmpeg and xsel (for pasting from clipboard)

@@ -559,7 +559,8 @@ class _Wr:
                     inp,i = i,json.loads(i)
                     if not isinstance(i, dict):
                         raise json.JSONDecodeError(f"expected  a dict got {type(i)}")
-                    print(f'\n{inp}\n')
+                    if self.logger.level==logging.DEBUG:
+                        print(f'\n{inp}\n')
                     self.__downloader__.download(i)
                 except json.JSONDecodeError as e:
                     self.logger.error(f"cannot parse input json; {repr(e)}")
