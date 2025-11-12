@@ -1,6 +1,7 @@
 # simple video downloader(svd)
 ### A simple downloader for common video urls passed as json.
 
+![svd.png-_-](svd.png)
 ### It can download:
 1. Raw videos e.g example.com/video.mp4
 2. Segmented videos (hls)
