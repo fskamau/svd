@@ -540,7 +540,7 @@ class _Wr:
     def get_input() -> str:
         i = input(">>> ")
         if len(i) > 4096 - 1 - 1:
-            raise exceptions.HelpExit("text too long. some terminal will cut the text. Save text in a file  'f' and use `svd -i f` instead")
+            raise exceptions.HelpExit(f"text too long {len(i)}. some terminal will cut the text. Save text in a file  'f' and use `svd -i f` instead")
         return i
 
     def repl(self) -> None:
@@ -560,7 +560,7 @@ class _Wr:
                     if not isinstance(i, dict):
                         raise json.JSONDecodeError(f"expected  a dict got {type(i)}")
                     if self.logger.level==logging.DEBUG:
-                        print(f'\n{inp}\n')
+                        print(f'\n{inp}\ninput len: {len(inp)}')
                     self.__downloader__.download(i)
                 except json.JSONDecodeError as e:
                     self.logger.error(f"cannot parse input json; {repr(e)}")
