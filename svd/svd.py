@@ -90,7 +90,7 @@ class Raw:
             return
         content_range, content_length, r = request.make_request(
             "GET", djob.url, djob.headers, logger, allow_mime_text=False, preload_content=False
-        )  # some servers will return 403 with 'HEAD' since 
+        )  # some servers will return 403 with 'HEAD' since
         r.release_conn()
         logger.debug(f"from HEAD request: {request.summarize_headers(r.headers)}")
         if content_range.total != content_length:
@@ -99,21 +99,23 @@ class Raw:
         pcrs = []
         pdir = str(djob.fo.parts_dir)
 
-        if content_length is None:#e.g tiktok lives
+        if content_length is None:  # e.g tiktok lives
             if any(djob.fo.parts_dir.iterdir()):
                 raise FileExistsError("content length is None but part files exists. cannot correcly identify missing data. remove it with --no-keep")
             logger.critical("no content range, downloading till server closes connection")
-            def format_progress(x,y):
+
+            def format_progress(x, y):
                 if y is not None:
-                    x.downloaded+=y
+                    x.downloaded += y
                 return f"saved {utils.format_file_size(x.downloaded)}"
+
             Options.exec.submit(
                 lambda: request.download(
                     djob.url,
                     djob.headers,
                     djob.fo.complete_download_filename,
                     logger=rlogger.get_adapter(logger, f"no content length"),
-                    progress_formatter=request.ProgressFormatter(None,format_progress),
+                    progress_formatter=request.ProgressFormatter(None, format_progress),
                     preload_content=False,
                 )
             ).result()
@@ -121,7 +123,9 @@ class Raw:
             if any(djob.fo.parts_dir.iterdir()):
                 logger.debug("checking already donwloaded parts")
                 if content_length is None:
-                    logger.critical(f"parts exists but content_length is None. cannot assume the server will return correct content ranges; remove {pdir} manually")
+                    logger.critical(
+                        f"parts exists but content_length is None. cannot assume the server will return correct content ranges; remove {pdir} manually"
+                    )
                 for file in djob.fo.parts_dir.iterdir():
                     if v := utils.update_part_file(file, logger):
                         pcrs.append(v[0])
@@ -145,9 +149,9 @@ class Raw:
                 else:
                     pcrs_ = pcrs
                 pcrs = pcrs_
-    
+
             logger.info(f"total size of parts present : {utils.format_file_size(size_present)}")
-            content_ranges = utils.get_missing_ranges(byte_end=content_length,part_size= Options.part_size, pcrs=pcrs)
+            content_ranges = utils.get_missing_ranges(byte_end=content_length, part_size=Options.part_size, pcrs=pcrs)
             logger.info(f"downloading  {utils.format_file_size(content_length-size_present)}")
             logger.debug(f"<JOB> (jobs={len(content_ranges)} jobs {content_ranges})")
             [
@@ -339,7 +343,7 @@ class FbIg:
                     yield {"url": djob.jobs[f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"), "f": f, "current_task": current_task}
 
         def download_with_thread_local_vars(t):
-            end=current_media_number if t['current_task']<=current_media_number else FbIg.INFINITY
+            end = current_media_number if t["current_task"] <= current_media_number else FbIg.INFINITY
             request.download(
                 t["url"],
                 djob.headers,
@@ -556,16 +560,16 @@ class _Wr:
                     print(f"use q or . to exit, 'svd -h' for help or  paste from clipboard")
                     continue
                 try:
-                    inp,i = i,json.loads(i)
+                    inp, i = i, json.loads(i)
                     if not isinstance(i, dict):
                         raise json.JSONDecodeError(f"expected  a dict got {type(i)}")
-                    if self.logger.level==logging.DEBUG:
-                        print(f'\n{inp}\ninput len: {len(inp)}')
+                    if self.logger.level == logging.DEBUG:
+                        print(f"\n{inp}\ninput len: {len(inp)}")
                     self.__downloader__.download(i)
                 except json.JSONDecodeError as e:
                     self.logger.error(f"cannot parse input json; {repr(e)}")
-            except (KeyboardInterrupt,EOFError):
-                return                    
+            except (KeyboardInterrupt, EOFError):
+                return
             except exceptions.HelpExit as e:
                 self.logger.critical(e.msg)
                 sys.exit(1)
@@ -573,8 +577,7 @@ class _Wr:
                 if self.logger.level == logging.DEBUG:
                     raise
                 self.logger.error(e)
-                sys.exit(1) 
-
+                sys.exit(1)
 
     def read(self, text: Optional[str] = None) -> str:
         if threading.current_thread() is threading.main_thread():

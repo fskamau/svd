@@ -17,7 +17,8 @@ from typing import Optional
 from urllib3 import HTTPHeaderDict
 
 Options = get_options()
-from ._request  import *
+from ._request import *
+
 
 def make_request(method, url, headers, logger, allow_mime_text: bool = True, preload_content: bool = True, enforce_content_length: bool = True):
     try:
@@ -37,7 +38,7 @@ def make_request(method, url, headers, logger, allow_mime_text: bool = True, pre
         return cr, cl, r
     except urllib3.exceptions.MaxRetryError as e:
         if e.reason and isinstance(e.reason, urllib3.exceptions.SSLError):
-            raise exceptions.HelpExit(f"ssl error {repr(e.reason)}. you may consider turning off ssl with `svd --no-ssl` flag which is dangerous")    
+            raise exceptions.HelpExit(f"ssl error {repr(e.reason)}. you may consider turning off ssl with `svd --no-ssl` flag which is dangerous")
         raise exceptions.CannotContinue(f"max retries error; {repr(e)}")
 
 
@@ -54,7 +55,7 @@ def download(
     """
     args
     ----
-    url : url 
+    url : url
     headers :  headers
     file_path :  where to save the file
     rq_r :  requested range
@@ -64,14 +65,20 @@ def download(
     preload_content : whether to load all content first or start streaming it directly to the file
     """
     if file_path.exists():
-        logger.debug(f"skipping {str(file_path)} since it exists {utils.format_file_size(file_path.stat().st_size)} {progress_formatter(file_path.stat().st_size)}")
+        logger.debug(
+            f"skipping {str(file_path)} since it exists {utils.format_file_size(file_path.stat().st_size)} {progress_formatter(file_path.stat().st_size)}"
+        )
         return
     if "range" in headers or not rq_r.is_default:
         headers["range"] = str(rq_r)
         logger.debug(f"downloading range {headers['range']}")
-    cr, cl, r = make_request("GET", url, headers=headers, logger=logger, allow_mime_text=False, preload_content=preload_content, enforce_content_length=preload_content)
+    cr, cl, r = make_request(
+        "GET", url, headers=headers, logger=logger, allow_mime_text=False, preload_content=preload_content, enforce_content_length=preload_content
+    )
     if not check_clcr(cl1, rq_r, cl, cr, logger):
-        raise exceptions.DownloadError(f"cl/cr errors while downloading {file_path} try clearing parts folder with  and setting part size to max using svd --no-keep -s 1000TB")
+        raise exceptions.DownloadError(
+            f"cl/cr errors while downloading {file_path} try clearing parts folder with  and setting part size to max using svd --no-keep -s 1000TB"
+        )
 
     if not preload_content:
         with file_path.open("wb") as wrt:
@@ -87,12 +94,16 @@ def download(
         with file_path.open("wb") as wrt:
             logger.debug(f"writing into {file_path}")
             wrt.write(r.data)
-            
+
             progress_formatter(len(r.data))
     s = file_path.stat().st_size
     if not rq_r.is_default:
         if s != len(rq_r):
-            raise exceptions.DownloadError("requested range size {len(rq_r)} != size of file written {s}" f"try removing cleaning up part-folder {file_path.parent()} and" "download whole resource by setting part size to max `svd -p 1T`")
+            raise exceptions.DownloadError(
+                "requested range size {len(rq_r)} != size of file written {s}"
+                f"try removing cleaning up part-folder {file_path.parent()} and"
+                "download whole resource by setting part size to max `svd -p 1T`"
+            )
     logger.info(f"wrote file {str(file_path)} {utils.format_file_size(s)} {progress_formatter()}")
 
 
@@ -115,7 +126,6 @@ def get_content_range(headers: urllib3.HTTPHeaderDict, logger: logging.Logger) -
     except (ValueError, TypeError):
         pass
     return ContentRange(*(content_range or [None, None, None]))
-
 
 
 def summarize_headers(headers: urllib3.HTTPHeaderDict) -> str:

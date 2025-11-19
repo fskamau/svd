@@ -35,11 +35,11 @@ class _Options:
         self.chunk_read_size = chunk_read_size
         self.complete_dir = complete_dir.resolve()
         # parts dir can be wiped completely using --clean. to prevent accidental setting it to path
-        #not intended then wiping it, we always create a .svd folder in it
-        self.parts_dir = parts_dir.resolve()/'.svd'
+        # not intended then wiping it, we always create a .svd folder in it
+        self.parts_dir = parts_dir.resolve() / ".svd"
         self.verbose = verbose
         self.ssl_on = ssl_on
-        self.no_keep= no_keep
+        self.no_keep = no_keep
         self.clean = clean
 
         self.logger = get_logger("𝘚𝘝𝘋" + (" with-no-ssl" if not self.ssl_on else ""))
@@ -69,7 +69,7 @@ class _Options:
                 raise FileNotFoundError(f"cannot read file  {str(self.filename)!r} supplied  through -i;  {repr(e)} ")
 
     @staticmethod
-    def _get_bytes_from_str(s: str):        
+    def _get_bytes_from_str(s: str):
         ss = "BKMGT"
         try:
             x, y = s[:-1], s[-1]
@@ -81,7 +81,6 @@ class _Options:
             return int(x)
         except Exception as e:
             raise ValueError(f"cannot parse unit of size {y}  in {s!r}. valid units are {','.join(ss)} e.g 1T ")
-
 
     def init(self) -> None:
         self.initialize_dirs()
@@ -155,16 +154,31 @@ def get_options() -> _Options:
     )
 
     parser.add_argument("-w", dest="workers", type=int, default=1, help="number of worker threads")
-    parser.add_argument("-s", dest="part_size", default="1024T", help="size of 1 download part. e.g 1M, 512M, 2G. A download will be split into parts with @ part-size <= to this size.")
+    parser.add_argument(
+        "-s",
+        dest="part_size",
+        default="1024T",
+        help="size of 1 download part. e.g 1M, 512M, 2G. A download will be split into parts with @ part-size <= to this size.",
+    )
     parser.add_argument("-i", dest="filename", type=Path, default=None, help="file to read json to download")
 
-    parser.add_argument("-c", dest="chunk_read_size", default="1M", help="chunk size to read from socket eg.512K. bigger is better but incase of an error all unwritten data is lost ")
+    parser.add_argument(
+        "-c",
+        dest="chunk_read_size",
+        default="1M",
+        help="chunk size to read from socket eg.512K. bigger is better but incase of an error all unwritten data is lost ",
+    )
     parser.add_argument("-d", dest="complete_dir", type=Path, default=Path.home() / "Downloads", help="complete files directory")
-    parser.add_argument("-p", dest="parts_dir", type=Path, default=Path.home() , help="temporary parts directory")
+    parser.add_argument("-p", dest="parts_dir", type=Path, default=Path.home(), help="temporary parts directory")
     parser.add_argument("-v", dest="verbose", action="store_true", default=False, help="verbose")
-    
-    parser.add_argument("--no-ssl", default=True, action="store_false", help="turn off ssl. unless you know what you are doing, *This is completely dangerous*. It can be used to access content where some servers host files in storage buckets without ssl")
-    parser.add_argument("--no-keep", default=False, action="store_true", help="delete parts after a download is complete")    
+
+    parser.add_argument(
+        "--no-ssl",
+        default=True,
+        action="store_false",
+        help="turn off ssl. unless you know what you are doing, *This is completely dangerous*. It can be used to access content where some servers host files in storage buckets without ssl",
+    )
+    parser.add_argument("--no-keep", default=False, action="store_true", help="delete parts after a download is complete")
     parser.add_argument("--clean", default=False, action="store_true", help="clean up parts dir")
 
     args = parser.parse_args()

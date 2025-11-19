@@ -12,6 +12,9 @@ import threading
 import tempfile
 from ._request import Range
 
+from . import exceptions
+
+
 def format_file_size(bytes_: int) -> str:
     sizes = " KMGT"
     if not isinstance(bytes_, (int, float)):
@@ -34,7 +37,6 @@ def join_parts(dest: Path, src_dir: Path) -> None:
                 shutil.copyfileobj(sfd, wrt)
 
 
-
 def format_time(seconds):
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
@@ -48,7 +50,6 @@ def format_bandwidth(bps):
         bps /= 1000.0
         i += 1
     return f"{int(bps):,d}{units[i]}bps"
-
 
 
 def rm_part_dir(dir_: str, no_keep: bool) -> None:
@@ -80,10 +81,10 @@ def save_response_to_temp_file(b: bytes) -> str:
     return temp_fname
 
 
-def get_folder_size(path:Path) -> int:
+def get_folder_size(path: Path) -> int:
     path = Path(path)
     total = 0
-    for p in path.rglob('*'):
+    for p in path.rglob("*"):
         try:
             if p.is_file():
                 total += p.stat().st_size
@@ -92,14 +93,14 @@ def get_folder_size(path:Path) -> int:
     return total
 
 
-def get_missing_ranges( byte_end:int, part_size, pcrs: Optional[tuple[tuple[int,int]]] = None,byte_start:int=0) -> tuple['Range']:
+def get_missing_ranges(byte_end: int, part_size, pcrs: Optional[tuple[tuple[int, int]]] = None, byte_start: int = 0) -> tuple["Range"]:
     ranges = []
-    if pcrs :
+    if pcrs:
         for i, x in enumerate(pcrs):
             if x[0] == byte_start:
                 byte_start = x[1] + 1
-            else:#some backward bytes are missing (byte_start...x[0])
-                [ranges.append(x) for x in get_missing_content_ranges(byte_start,x[0], part_size, None)]
+            else:  # some backward bytes are missing (byte_start...x[0])
+                [ranges.append(x) for x in get_missing_content_ranges(byte_start, x[0], part_size, None)]
                 byte_start = x[1] + 1
     while byte_start < byte_end:
         end = min(byte_start + part_size - 1, byte_end - 1)
@@ -108,7 +109,7 @@ def get_missing_ranges( byte_end:int, part_size, pcrs: Optional[tuple[tuple[int,
     return [Range(*c) for c in ranges]
 
 
-def update_part_file(f:Path,logger:logging.Logger)->Optional[tuple[tuple[int,int],int]]:
+def update_part_file(f: Path, logger: logging.Logger) -> Optional[tuple[tuple[int, int], int]]:
     """
     update the name of an existing part file if its name does not reflect its size and
     return the new name
@@ -125,11 +126,13 @@ def update_part_file(f:Path,logger:logging.Logger)->Optional[tuple[tuple[int,int
         return None
     if fsize != (fname_size := (v[1] - v[0] + 1)):
         if fsize > fname_size:
-            raise exceptions.CorruptedPartsDir(f"malformed part file range name for {f}; actual partfile size" f"{fsize} is greather than max indicated {fname_size}")
+            raise exceptions.CorruptedPartsDir(
+                f"malformed part file range name for {f}; actual partfile size" f"{fsize} is greather than max indicated {fname_size}"
+            )
         v[1] = v[0] + fsize - 1
-        new_part_name = f.parent/f'{v[0]}-{v[1]}'
+        new_part_name = f.parent / f"{v[0]}-{v[1]}"
         logger.debug(f"renaming part file {f} to {new_part_name} since its size is {fsize} and not {fname_size}")
         if new_part_name.exists():
             raise exceptions.CorruptedPartsDir(f"cannot rename. content range overlap. same filename {new_part_name} exists")
         f.rename(new_part_name)
-    return v,fsize
+    return v, fsize

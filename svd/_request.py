@@ -9,6 +9,7 @@ from typing import Self
 from typing import Optional
 from urllib3 import HTTPHeaderDict
 
+
 class Range(NamedTuple):
     start: int = 0
     stop: Optional[int] = None
@@ -64,9 +65,9 @@ class ContentRange(NamedTuple):
         return f"bytes {self.start}-{self.stop}/{self.len}"
 
     @classmethod
-    def default(cls)->Self:
-        return cls(None,None,None)
-    
+    def default(cls) -> Self:
+        return cls(None, None, None)
+
     @property
     def len(self) -> Optional[int]:
         if not self:
@@ -145,4 +146,3 @@ class ProgressFormatter:
         if self.total is None:
             return ""
         return f"{self.downloaded / self.total * 100.0:.2f}%"
-

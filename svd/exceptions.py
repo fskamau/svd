@@ -30,6 +30,5 @@ class DownloadError(Exception):
     pass
 
 
-
 class HLSError(Exception):
     pass
