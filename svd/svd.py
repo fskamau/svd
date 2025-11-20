@@ -564,7 +564,7 @@ class Downloader:
             f = HLS.download
         elif t == "xml":
             base_url = utils.get_base_url(djob.url)
-            if any([x in base_url for x in [".okcdn." "vkideo.ru"]]):
+            if any([x in base_url for x in [".okcdn.", "vkideo.ru"]]):
                 f = VK.download
             else:
                 f = FbIg.download
@@ -676,6 +676,11 @@ class _Wr:
                 i = Options.get_input_from_file() or _Wr.get_input()
                 if self.__expects_message__:
                     self.__set_message__(i)
+                    continue
+                if i == "." or i == "q":
+                    break
+                if i == "":
+                    print(f"use q or . to exit, 'svd -h' for help or  paste from clipboard")
                     continue
                 try:
                     inp, i = i, json.loads(i)
