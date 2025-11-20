@@ -3,18 +3,15 @@ anything dealing with requests and responses
 """
 
 import logging
+from pathlib import Path
 from typing import Optional
 import urllib3
 from .options import get_options
 from . import utils
-from typing import Callable
 
 import re
 from . import exceptions
-from typing import NamedTuple
-from typing import Self
 from typing import Optional
-from urllib3 import HTTPHeaderDict
 
 Options = get_options()
 from ._request import *
@@ -45,7 +42,7 @@ def make_request(method, url, headers, logger, allow_mime_text: bool = True, pre
 def download(
     url: str,
     headers: urllib3.HTTPHeaderDict,
-    file_path: str,
+    file_path: Path,
     logger: logging.Logger,
     rq_r: Optional[tuple[int]] = Range.default(),
     cl1: Optional[int] = None,
@@ -77,7 +74,7 @@ def download(
     )
     if not check_clcr(cl1, rq_r, cl, cr, logger):
         raise exceptions.DownloadError(
-            f"cl/cr errors while downloading {file_path} try clearing parts folder with  and setting part size to max using svd --no-keep -s 1000TB"
+            f"cl/cr errors while downloading {file_path} try clearing parts folder with  and setting part size to max using 'svd --no-keep -s 1000TB'"
         )
 
     if not preload_content:
@@ -100,7 +97,7 @@ def download(
     if not rq_r.is_default:
         if s != len(rq_r):
             raise exceptions.DownloadError(
-                "requested range size {len(rq_r)} != size of file written {s}"
+                f"requested range size {len(rq_r)} != size of file written {s}"
                 f"try removing cleaning up part-folder {file_path.parent()} and"
                 "download whole resource by setting part size to max `svd -p 1T`"
             )
@@ -120,8 +117,8 @@ def get_content_range(headers: urllib3.HTTPHeaderDict, logger: logging.Logger) -
     content_range = None
     try:
         content_range = list(map(int, re.findall(r"\d+", cr := headers.get("content-range"))))
-        if len(content_range) != 3 or content_range[0] + content_range[1] + 1 != content_range[2]:
-            logger.debug(f"malformed content range '{cr!r}'")
+        if len(content_range) != 3:
+            logger.debug(f"malformed content range {cr!r}")
             content_range = None
     except (ValueError, TypeError):
         pass

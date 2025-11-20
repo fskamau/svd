@@ -8,7 +8,6 @@ import textwrap
 from concurrent.futures import ThreadPoolExecutor
 import urllib3
 import ssl
-from . import exceptions
 
 from . import utils
 
@@ -20,7 +19,7 @@ class _Options:
         self,
         workers,
         part_size,
-        filename,
+        input_filename,
         chunk_read_size,
         complete_dir,
         parts_dir,
@@ -28,10 +27,11 @@ class _Options:
         ssl_on,
         no_keep,
         clean,
+        output_filepath,
     ):
         self.workers = workers
         self.part_size = part_size
-        self.filename = filename
+        self.input_filename = input_filename
         self.chunk_read_size = chunk_read_size
         self.complete_dir = complete_dir.resolve()
         # parts dir can be wiped completely using --clean. to prevent accidental setting it to path
@@ -41,6 +41,7 @@ class _Options:
         self.ssl_on = ssl_on
         self.no_keep = no_keep
         self.clean = clean
+        self.output_filepath = output_filepath
 
         self.logger = get_logger("𝘚𝘝𝘋" + (" with-no-ssl" if not self.ssl_on else ""))
         if not ssl_on:
@@ -59,14 +60,20 @@ class _Options:
             "ffmpeg": "joining media parts",
         }
 
+    def get_output_filepath(self) -> Optional[Path]:
+        if self.output_filepath:
+            fp, self.output_filepath = self.output_filepath, None
+            return Path(fp)
+        return None
+
     def get_input_from_file(self) -> Optional[str]:
-        if self.filename:
+        if self.input_filename:
             try:
-                r = self.filename.open("r").read()
-                self.filename = None
+                r = self.input_filename.open("r").read()
+                self.input_filename = None
                 return r
             except Exception as e:
-                raise FileNotFoundError(f"cannot read file  {str(self.filename)!r} supplied  through -i;  {repr(e)} ")
+                raise FileNotFoundError(f"cannot read file  {str(self.input_filename)!r} supplied  through -i;  {repr(e)} ")
 
     @staticmethod
     def _get_bytes_from_str(s: str):
@@ -171,7 +178,6 @@ def get_options() -> _Options:
     parser.add_argument("-d", dest="complete_dir", type=Path, default=Path.home() / "Downloads", help="complete files directory")
     parser.add_argument("-p", dest="parts_dir", type=Path, default=Path.home(), help="temporary parts directory")
     parser.add_argument("-v", dest="verbose", action="store_true", default=False, help="verbose")
-
     parser.add_argument(
         "--no-ssl",
         default=True,
@@ -180,12 +186,13 @@ def get_options() -> _Options:
     )
     parser.add_argument("--no-keep", default=False, action="store_true", help="delete parts after a download is complete")
     parser.add_argument("--clean", default=False, action="store_true", help="clean up parts dir")
+    parser.add_argument("filepath", nargs="?", type=Path, default=None)
 
     args = parser.parse_args()
     _options_instance = _Options(
         workers=args.workers,
         part_size=_Options._get_bytes_from_str(args.part_size),
-        filename=args.filename,
+        input_filename=args.filename,
         chunk_read_size=_Options._get_bytes_from_str(args.chunk_read_size),
         complete_dir=args.complete_dir,
         parts_dir=args.parts_dir,
@@ -193,6 +200,7 @@ def get_options() -> _Options:
         ssl_on=args.no_ssl,
         no_keep=args.no_keep,
         clean=args.clean,
+        output_filepath=args.filepath,
     )
     _options_instance.init()
     return get_options()

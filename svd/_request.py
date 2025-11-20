@@ -109,7 +109,7 @@ def check_clcr(
     rc_cr: received content range
     """
     if cl is not None and rc_cr and cl != rc_cr.total:
-        logger.critical(f"content length from 'HEAD' is {cl} but content range indicate it is {rc_cr.total}  from {rc_cr}")
+        logger.critical(f"content length from 'HEAD' is {cl} but content range indicate it is {rc_cr.total}  from {rc_cr} and {rc_cl}")
     if rq_r != rc_cr:
         logger.critical(f"requested range != received content range {rq_r} != {rc_cr}")
         return False

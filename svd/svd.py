@@ -13,15 +13,24 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import Future
 from io import StringIO
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 import time
 from urllib3 import HTTPHeaderDict
-
+from urllib.parse import urljoin
 from . import exceptions, request, utils
 from .options import get_options
 
 Options = get_options()
 from . import rlogger
+
+
+class Djob:
+    def __init__(self, url: str, headers: dict, others: Optional[dict], logger: Optional[logging.Logger] = None):
+        self.url = url
+        self.headers = HTTPHeaderDict(headers)
+        self.others = others
+        self.fo = FileObject(url)
+        self.logger = logger
 
 
 class HLS:
@@ -85,12 +94,15 @@ class Raw:
 
     def download(djob: "Djob"):
         djob.headers["range"] = "bytes=0-"
-        logger = rlogger.get_adapter(Options.logger, Raw.__name__)
+        if hasattr(djob, "logger"):
+            logger = djob.logger
+        else:
+            logger = rlogger.get_adapter(Options.logger, Raw.__name__)
         if djob.fo.check_completed_download(logger=logger):
             return
         content_range, content_length, r = request.make_request(
             "GET", djob.url, djob.headers, logger, allow_mime_text=False, preload_content=False
-        )  # some servers will return 403 with 'HEAD' since
+        )  # some servers will return 403 with 'HEAD' since they dont expect you to ...
         r.release_conn()
         logger.debug(f"from HEAD request: {request.summarize_headers(r.headers)}")
         if content_range.total != content_length:
@@ -175,6 +187,154 @@ class Raw:
         utils.rm_part_dir(djob.fo.parts_dir, Options.no_keep)
 
 
+class MPD:
+    """
+    common funcs for Media Presentation Description
+    """
+
+    def get_namespaces(xml_str: str) -> dict:
+        """Return all namespaces in an XML string as {prefix: uri}."""
+        namespaces = {}
+        for event, elem in ET.iterparse(StringIO(xml_str), events=("start-ns",)):
+            prefix, uri = elem
+            namespaces[prefix] = uri
+        return namespaces
+
+    def get_desired_format_choice(formats: list[str], logger: logging.Logger) -> dict:
+        choices = []
+        for index, f in enumerate(formats):
+            c = f"{f['mimetype']}"
+            if f.get("quality") is not None:
+                c += f"@{f['quality']}"
+            if f.get("bandwidth") is not None:
+                c += f"@{utils.format_bandwidth(f['bandwidth'])}"
+            choices.append((index, c))
+        other = list(itertools.combinations(choices, 2))
+        if len(other) > 0:
+            for o in other:
+                if len(set([formats[x[0]]["basename"] for x in o])) == 1:  # don't add same formats with diff qualities like video720p and video1080p
+                    continue
+                choices.append([*[x[0] for x in o], " + ".join([x[1] for x in o])])
+        len_choices = len(choices)
+        s = ""
+        colors = itertools.cycle(["\033[1;37;40m", "\033[1;30;47m"])
+        for index, c in enumerate(choices):
+            s += f"{next(colors)}[{index:3d} => {c[-1]}]\033[0m\n"
+        s += f"{'-'*50}\nThe following {len(choices)} formats exists. please choose 1"
+        try:
+            text = Wr.read(s)
+            v = choices[abs(int(i := text))]
+            logger.info(f"you choose '{v[-1]}'")
+            return {formats[x].pop("basename"): formats[x] for x in v[:-1]}
+        except (ValueError, IndexError) as e:
+            raise exceptions.CannotContinue(f"cannot get your choice from '{i}'")
+
+    def init_dirs(djob: "Djob", sub_dirs: list[Path], logger: logging.Logger):
+        """
+        intit dir in the following format
+        [outdir/video|outdir/audio]
+        """
+        for p in djob.fo.parts_dir.iterdir():
+            if p.name not in sub_dirs:
+                raise FileExistsError(f"other dirs exists in {djob.fo.parts_dir} cannot continue. consider using --no-keep to clean the parts dir first")
+
+        for x in sub_dirs:
+            if (p := (djob.fo.parts_dir / x)).exists():
+                logger.critical(f"dir {p} exists. format corruption if a different format has been chosen. Nothing will be removed")
+            else:
+                p.mkdir()
+
+
+class VK:
+    """
+    download videos &| audio from VKvideo
+    """
+
+    def parse_xml(xml_str: str, logger: logging.Logger) -> list[str]:
+        """
+        extract useful info from xml mpd. strictly for VK
+        """
+        try:
+            reps = []
+            root = ET.fromstring(xml_str)
+            namespaces = MPD.get_namespaces(xml_str)
+            # logger.debug(ET.tostring(root).decode())
+            for seg in root.findall(".//AdaptationSet", namespaces):
+                mimeType = seg.get("mimeType")
+                if (mimeType and "webvtt" in mimeType.lower()) or not mimeType:  # skip web video text tracks like subtitles and captions
+                    continue
+                for rep in seg.findall(".//Representation", namespaces):
+                    rd = {"mimetype": mimeType}
+                    try:
+                        rd["basename"], rd["file_extension"] = re.search(FbIg.MIMETYPE_REGEX, mimeType).groups()
+                    except AttributeError:
+                        logger.error(f"cannot match mimeType {mimeType} to extract file extension")
+                        raise NotImplementedError
+                    if (a := rep.get("quality")) is not None:
+                        rd["quality"] = a
+                    if "audio" in rd["basename"].lower() and (a := rep.get("bandwidth")) is not None:
+                        rd["bandwidth"] = int(a)
+                    base_url = rep.find("./BaseURL", namespaces)
+                    if base_url is None:
+                        logger.error(msg := f"missing a base url for {rd}")
+                        raise NotImplementedError
+                    rd["url"] = base_url.text
+                    reps.append(rd)
+            return reps
+        except AttributeError as e:
+            raise exceptions.CannotContinue(f"cannot parse xml {repr(e)}")
+        except Exception as e:
+            raise exceptions.CannotContinue(f"{repr(e)}")
+
+    def download(djob: "Djob"):
+        logger = rlogger.get_adapter(Options.logger, "VK")
+        logger.debug("VKvideo")
+        formats = VK.parse_xml(djob.others["xmlData"], logger)
+        choice = MPD.get_desired_format_choice(formats, logger)
+        djob.jlen = len(choice)
+        # set final file extension based on choice
+        djob.fo.set_mime_type(f".{(choice['audio'] if  djob.jlen == 1 and list(choice)[0] == 'audio' else choice['video']  )['file_extension']}")
+        if djob.fo.check_completed_download(logger):
+            return
+        logger.info(f"downloading {'video + audio' if len(choice)>1 else list(choice)[0] +' only'}")
+        djob.others = choice
+        MPD.init_dirs(djob, choice.keys(), logger)
+        VK._download(djob, logger)
+        logger.ok(f"downloaded {djob.fo.complete_download_filename} size {utils.format_file_size(djob.fo.complete_download_filename.stat().st_size)}")
+
+    def _download(djob: Djob, logger: logging.Logger) -> None:
+        # we take item from each job
+        jobs = []
+        for x in djob.others:
+            j = djob.others[x]
+            fo = FileObject("")
+            fo.set_cwd(djob.fo.parts_dir / x)
+            fo.initialize_dirs(logger)
+            mt = j.get("file_extension")
+            mt = "" if not mt else f".{mt}"
+            fo.set_completed_filepath(fo.cwd / f"{x}{mt}")
+            d = Djob(urljoin(utils.get_base_url(djob.url), j["url"]), djob.headers, None)
+            d.fo = fo
+            d.logger = rlogger.get_adapter(logger, x)
+            jobs.append(d)
+            Raw.download(d)  # we could submit both (audio&video) but if user has <=2 workers, deadlock will occur
+        VK.join(djob, jobs, logger)
+
+    def join(main: Djob, djobs: list[Djob], logger: logging.Logger):
+        complete = main.fo.complete_download_filename
+        if main.fo.check_completed_download(logger):
+            raise FileExistsError(f"file {str(complete)} exists")
+        cmd = [
+            "ffmpeg",
+        ]
+        for d in djobs:
+            cmd.append("-i")
+            cmd.append(d.fo.complete_download_filename)
+        [cmd.append(x) for x in ["-c", "copy", complete]]
+        subprocess.check_output(cmd)
+        logger.info(f"wrote {complete} {utils.format_file_size(complete.stat().st_size)}")
+
+
 class MaybeMetaAlteredCodeException(NotImplementedError):
     pass
 
@@ -189,14 +349,14 @@ class FbIg:
     MEDIA_NUMBER_STR = "$Number$"
     INIT_FILENAME = "0"  # for easy sorting cat $(ls -v) > out.mp4
     INFINITY = "∞"
-    STATUS_CODE_ERROR_COUNT = 2
+    STATUS_CODE_ERROR_COUNT = 3
     STATUS_CODE_ERROR_SLEEP = 5
     assert STATUS_CODE_ERROR_COUNT > 0
 
     def join(djob: "Djob", logger: logging.Logger):
         paths = []
         complete = djob.fo.complete_download_filename
-        for f in djob.jobs:
+        for f in djob.others:
             p = djob.fo.parts_dir / f
             try:
                 files = sorted(p.iterdir(), key=lambda path: int(path.name))  # will raise ValueError if not numeric
@@ -205,7 +365,7 @@ class FbIg:
                 with part_file.open("wb") as wrt:
                     for part in files:
                         shutil.copyfileobj((p / part).open("rb"), wrt)
-                if djob.jlen == 1:
+                if len(djob.others) == 1:
                     out_file = complete
                 else:
                     paths.append(out_file := (p / f"{complete.name}"))
@@ -221,21 +381,13 @@ class FbIg:
                 logger.debug(f"joined parts to {out_file}")
             except ValueError:
                 raise RuntimeError(f"dir {complete} is corrupted as it contains other files, try cleaning parts dir with --no-keep ")
-        if djob.jlen == 2:
+        if len(djob.others) == 2:
             logger.debug("joining video and audio")
             if complete.exists():
-                raise RuntimeError("{complete} has exist while process was running; did you create it?")
+                raise RuntimeError(f"{complete} has existed while process was running; did you create it?")
             subprocess.check_output(["ffmpeg", "-i", paths[0], "-i", paths[1], "-c", "copy", complete])
         [x.unlink() for x in paths]
         logger.info(f"wrote {complete} {utils.format_file_size(complete.stat().st_size)}")
-
-    def get_namespaces(xml_str: str) -> dict:
-        """Return all namespaces in an XML string as {prefix: uri}."""
-        namespaces = {}
-        for event, elem in ET.iterparse(StringIO(xml_str), events=("start-ns",)):
-            prefix, uri = elem
-            namespaces[prefix] = uri
-        return namespaces
 
     def parse_xml(xml_str: str, logger: logging.Logger) -> list[str]:
         """
@@ -244,14 +396,14 @@ class FbIg:
         try:
             reps = []
             root = ET.fromstring(xml_str)
-            namespaces = FbIg.get_namespaces(xml_str)
+            namespaces = MPD.get_namespaces(xml_str)
             # logger.debug(ET.tostring(root).decode())
             for seg in root.findall(".//AdaptationSet", namespaces):
                 if (s := seg.get("segmentAlignment")) is not None:
                     if s != "true":
                         raise MaybeMetaAlteredCodeException(f"segment alignment is not 'true' {seg.attrib}. not implemented")
             for rep in root.findall(".//Representation", namespaces):
-                if "wvtt" in rep.get("codecs"):  # skip web video text tracks like subtitles and captions
+                if "wvtt" in rep.get("codecs") or []:  # skip web video text tracks like subtitles and captions
                     continue
                 rd = {"mimetype": rep.attrib["mimeType"]}
                 try:
@@ -291,7 +443,7 @@ class FbIg:
         logger = rlogger.get_adapter(Options.logger, "LIVE")
         logger.debug("live facebook/instagram")
         formats = FbIg.parse_xml(djob.others["xmlData"], logger)
-        choice = FbIg.get_desired_format_choice(formats, logger)
+        choice = MPD.get_desired_format_choice(formats, logger)
 
         djob.jlen = len(choice)
         # set final file extension based on choice
@@ -304,12 +456,11 @@ class FbIg:
                 ipu = len(re.search(r"(^\.+)", choice[c][k]).group(1))
                 choice[c][k + "_url"] = "/".join(djob.url.split("/")[:-ipu]) + choice[c][k][ipu:]
                 choice[c].pop(k)
-        djob.jobs = choice
-        FbIg.init_dirs(djob, logger)
+        MPD.init_dirs(djob, choice.keys(), logger)
         FbIg._download(djob, logger)
         logger.ok(f"downloaded {djob.fo.complete_download_filename} size {utils.format_file_size(djob.fo.complete_download_filename.stat().st_size)}")
 
-    def _download(djob: "Djob", logger: logging.Logger) -> None:
+    def _download(djob: "Djob", choice: dict[str, dict], logger: logging.Logger) -> None:
         # download  init files first
         for x in djob.jobs:
             request.download(
@@ -383,64 +534,12 @@ class FbIg:
 
         Options.exec.submit(one_thread).result()
 
-    def init_dirs(djob: "Djob", logger: logging.Logger):
-        """
-        intit dir in the following format
-        [outdir/video|outdir/audio]
-        """
-        for p in djob.fo.parts_dir.iterdir():
-            if p.name not in djob.jobs:
-                raise FileExistsError(f"other dirs exists in {djob.fo.parts_dir} cannot continue. consider using --no-keep to clean the parts dir first")
-
-        for x in list(djob.jobs.keys()):
-            if (p := (djob.fo.parts_dir / x)).exists():
-                logger.critical(f"dir {p} exists. format corruption if a different format has been chosen. Nothing will be removed")
-            else:
-                p.mkdir()
-
-    def get_desired_format_choice(formats: list[str], logger: logging.Logger):
-        choices = []
-        for index, f in enumerate(formats):
-            c = f"{f['mimetype']}"
-            if f.get("quality") is not None:
-                c += f"@{f['quality']}"
-            if f.get("bandwidth") is not None:
-                c += f"@{utils.format_bandwidth(f['bandwidth'])}"
-            choices.append((index, c))
-        other = list(itertools.combinations(choices, 2))
-        if len(other) > 0:
-            for o in other:
-                if len(set([formats[x[0]]["basename"] for x in o])) == 1:  # don't add same formats like video720p and video1080p
-                    continue
-                choices.append([*[x[0] for x in o], " + ".join([x[1] for x in o])])
-        len_choices = len(choices)
-        s = ""
-        colors = itertools.cycle(["\033[1;37;40m", "\033[1;30;47m"])
-        for index, c in enumerate(choices):
-            s += f"{next(colors)}[{index:3d} => {c[-1]}]\033[0m\n"
-        s += f"{'-'*50}\nThe following {len(choices)} formats exists. please choose 1"
-        try:
-            text = Wr.read(s)
-            v = choices[abs(int(i := text))]
-            logger.info(f"you choose '{v[-1]}'")
-            return {formats[x].pop("basename"): formats[x] for x in v[:-1]}
-        except (ValueError, IndexError) as e:
-            raise exceptions.CannotContinue(f"cannot get your choice from '{i}'")
-
-
-class Djob:
-    def __init__(self, url: str, headers: dict, others: dict):
-        self.url = url
-        self.headers = HTTPHeaderDict(headers)
-        self.others = others
-        self.fo = FileObject(url)
-
 
 class Downloader:
     def __init__(self):
         self.logger = rlogger.get_adapter(Options.logger, threading.current_thread().name)
 
-    def parse_data(self, data: dict) -> dict:
+    def parse_data(self, data: dict) -> Djob:
         try:
             isinstance(data["url"], str)
         except Exception as e:
@@ -457,11 +556,23 @@ class Downloader:
     def download(self, data: dict):
         djob = self.parse_data(data)
         t = data.get("type", "raw")
-        f = Raw.download if t == "raw" else HLS.download if t == "segments" else FbIg.download if t == "xml" else None
-        if not f:
+        f = None
+        if t == "raw":
+            f = Raw.download
+        elif t == "segments":
+            f = HLS.download
+        elif t == "xml":
+            base_url = utils.get_base_url(djob.url)
+            if ".okcdn." in base_url:
+                f = VK.download
+            else:
+                f = FbIg.download
+        else:
             raise exceptions.CannotContinue(f"malformed type: unknown 'type':{t}")
         self.logger.debug(f"cwd {djob.fo.cwd}")
         djob.fo.initialize_dirs(self.logger)
+        if o := Options.get_output_filepath():
+            djob.fo.set_completed_filepath(o)
         with (djob.fo.cwd / "info").open("w") as wrt:
             wrt.write(json.dumps(data))
         t = time.perf_counter()
@@ -478,10 +589,11 @@ class FileObject:
         self.cwd = Options.parts_dir / self.hash_url(url)
         self.parts_dir = self.cwd / "parts"
         self.mime_type: str = ""
+        self._cfilename = None
 
     @property
     def complete_download_filename(self) -> Path:
-        return Path(Options.complete_dir / (self.cwd.parts[-1] + self.mime_type))
+        return self._cfilename or Path(Options.complete_dir / (self.cwd.parts[-1] + self.mime_type))
 
     def initialize_dirs(self, logger: logging.Logger) -> None:
         if Options.no_keep and self.cwd.exists():
@@ -506,6 +618,16 @@ class FileObject:
     @staticmethod
     def hash_url(url: str) -> str:
         return hashlib.md5(url.encode("utf-8")).hexdigest()
+
+    def set_cwd(self, cwd: Path) -> None:
+        self.cwd = cwd
+        self.parts_dir = self.cwd / "parts"
+
+    def set_completed_filepath(self, file_path: str) -> None:
+        p = Path(file_path)
+        if not p.parent.exists():
+            raise FileNotFoundError(f"Parent directory does not exist: {p.parent}")
+        self._cfilename = file_path
 
 
 class _Wr:
@@ -566,6 +688,7 @@ class _Wr:
                     if self.logger.level == logging.DEBUG:
                         print(f"\n{inp}\ninput len: {len(inp)}")
                     self.__downloader__.download(i)
+                    break
                 except json.JSONDecodeError as e:
                     self.logger.error(f"cannot parse input json; {repr(e)}")
             except (KeyboardInterrupt, EOFError):

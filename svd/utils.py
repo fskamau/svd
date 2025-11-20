@@ -1,13 +1,11 @@
 from typing import Optional
-import urllib3
 import logging
 import re
 from pathlib import Path
 import shutil
 from urllib.parse import urlparse
-
 import mimetypes
-from urllib3._collections import HTTPHeaderDict
+from urllib3 import HTTPHeaderDict
 import threading
 import tempfile
 from ._request import Range
@@ -100,7 +98,8 @@ def get_missing_ranges(byte_end: int, part_size, pcrs: Optional[tuple[tuple[int,
             if x[0] == byte_start:
                 byte_start = x[1] + 1
             else:  # some backward bytes are missing (byte_start...x[0])
-                [ranges.append(x) for x in get_missing_content_ranges(byte_start, x[0], part_size, None)]
+                print(byte_end, part_size, pcrs, byte_start)
+                [ranges.append(x) for x in get_missing_ranges(x[0], part_size, None, byte_start)]
                 byte_start = x[1] + 1
     while byte_start < byte_end:
         end = min(byte_start + part_size - 1, byte_end - 1)
@@ -116,7 +115,7 @@ def update_part_file(f: Path, logger: logging.Logger) -> Optional[tuple[tuple[in
     else delete the file if its empty and return None
     """
     if not (v := re.search(r"(\d+)-(\d+)", f.name)):
-        raise FileExistsError(f"other files exists in parts dir {f.parent} e.g {f!r}. not continuing")
+        raise FileExistsError(f"other files exists in parts dir {f.parent} e.g {str(f)!r}. not continuing")
     v = list(map(int, [v.group(1), v.group(2)]))
     if v[0] >= v[1]:
         raise exceptions.CorruptedPartsDir(f"malformed part file name {f!r}")
