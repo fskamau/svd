@@ -117,12 +117,12 @@ def check_clcr(
 
 
 class ProgressFormatter:
-    def __init__(self, total: Optional[int] = None, func: Optional[Callable[["ProgressFormatter", int], str]] = None,present:int=0):
+    def __init__(self, total: Optional[int] = None, func: Optional[Callable[["ProgressFormatter", int], str]] = None, present: int = 0):
         if total == 0:
             raise ZeroDivisionError(total)
         self.total = total
         self.downloaded = 0
-        self.present=present
+        self.present = present
         self.func = func or ProgressFormatter.default_formatter
 
     def __call__(self, downloaded: Optional[int] = None) -> str:

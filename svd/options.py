@@ -160,7 +160,7 @@ def get_options() -> _Options:
                             """
             ),
         )
-    
+
         parser.add_argument("-w", dest="workers", type=int, default=1, help="number of worker threads")
         parser.add_argument(
             "-s",
@@ -169,7 +169,7 @@ def get_options() -> _Options:
             help="size of 1 download part. e.g 1M, 512M, 2G. A download will be split into parts with @ part-size <= to this size.",
         )
         parser.add_argument("-i", dest="filename", type=Path, default=None, help="file to read json to download")
-    
+
         parser.add_argument(
             "-c",
             dest="chunk_read_size",
@@ -188,7 +188,7 @@ def get_options() -> _Options:
         parser.add_argument("--no-keep", default=False, action="store_true", help="delete parts after a download is complete")
         parser.add_argument("--clean", default=False, action="store_true", help="clean up parts dir")
         parser.add_argument("filepath", nargs="?", type=Path, default=None)
-    
+
         args = parser.parse_args()
         _options_instance = _Options(
             workers=args.workers,

@@ -120,7 +120,8 @@ class Raw:
                 if y is not None:
                     x.downloaded += y
                 return f"saved {utils.format_file_size(x.downloaded)}"
-            pf=request.ProgressFormatter(None, format_progress)
+
+            pf = request.ProgressFormatter(None, format_progress)
             Options.exec.submit(
                 lambda: request.download(
                     djob.url,
@@ -166,7 +167,7 @@ class Raw:
             content_ranges = utils.get_missing_ranges(byte_end=content_length, part_size=Options.part_size, pcrs=pcrs)
             logger.info(f"downloading  {utils.format_file_size(content_length-size_present)}")
             logger.debug(f"<JOB> (jobs={len(content_ranges)} jobs {content_ranges})")
-            pf=request.ProgressFormatter(content_length ,present= size_present)
+            pf = request.ProgressFormatter(content_length, present=size_present)
             [
                 _
                 for _ in Options.exec.map(
@@ -262,9 +263,11 @@ class VK:
             # logger.debug(ET.tostring(root).decode())
             for seg in root.findall(".//AdaptationSet", namespaces):
                 mimeType = seg.get("mimeType")
-                if (mimeType and "webvtt" in mimeType.lower()) or not mimeType:  # skip web video text tracks like subtitles and captions
-                    continue
                 for rep in seg.findall(".//Representation", namespaces):
+                    if mimeType is None:
+                        mimeType = rep.get("mimeType")
+                        if not mimeType:
+                            raise NotImplementedError(f"cannot get mimeType")
                     rd = {"mimetype": mimeType}
                     try:
                         rd["basename"], rd["file_extension"] = re.search(FbIg.MIMETYPE_REGEX, mimeType).groups()
@@ -325,9 +328,7 @@ class VK:
         complete = main.fo.complete_download_filename
         if main.fo.check_completed_download(logger):
             raise FileExistsError(f"file {str(complete)} exists")
-        cmd = [
-            "ffmpeg"
-        ]
+        cmd = ["ffmpeg"]
         for d in djobs:
             cmd.append("-i")
             cmd.append(d.fo.complete_download_filename)
@@ -457,14 +458,14 @@ class FbIg:
                 ipu = len(re.search(r"(^\.+)", choice[c][k]).group(1))
                 choice[c][k + "_url"] = "/".join(djob.url.split("/")[:-ipu]) + choice[c][k][ipu:]
                 choice[c].pop(k)
-        djob.others=choice
+        djob.others = choice
         MPD.init_dirs(djob, choice.keys(), logger)
         FbIg._download(djob, logger)
         logger.ok(f"downloaded {djob.fo.complete_download_filename} size {utils.format_file_size(djob.fo.complete_download_filename.stat().st_size)}")
 
     def _download(djob: "Djob", logger: logging.Logger) -> None:
         # download  init files first
-        pf=request.ProgressFormatter.default()
+        pf = request.ProgressFormatter.default()
         for x in djob.others:
             request.download(
                 djob.others[x]["init_url"],
@@ -496,7 +497,8 @@ class FbIg:
                     djob.others[f]["current_task"] += 1
                     yield {"url": djob.others[f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"), "f": f, "current_task": current_task}
 
-        pf=request.ProgressFormatter.default()
+        pf = request.ProgressFormatter.default()
+
         def download_with_thread_local_vars(t):
             end = current_media_number if t["current_task"] <= current_media_number else FbIg.INFINITY
             request.download(
