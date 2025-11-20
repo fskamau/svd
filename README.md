@@ -15,7 +15,6 @@
         "url":"example.com/video.mp4",
         "headers":
                     {"referer":"example.com"},
-        "type":"raw"
     }
     ```
 

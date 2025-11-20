@@ -677,11 +677,6 @@ class _Wr:
                 if self.__expects_message__:
                     self.__set_message__(i)
                     continue
-                if i == "." or i == "q":
-                    break
-                if i == "":
-                    print(f"use q or . to exit, 'svd -h' for help or  paste from clipboard")
-                    continue
                 try:
                     inp, i = i, json.loads(i)
                     if not isinstance(i, dict):
