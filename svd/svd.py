@@ -325,7 +325,7 @@ class VK:
         if main.fo.check_completed_download(logger):
             raise FileExistsError(f"file {str(complete)} exists")
         cmd = [
-            "ffmpeg",
+            "ffmpeg"
         ]
         for d in djobs:
             cmd.append("-i")
@@ -456,15 +456,16 @@ class FbIg:
                 ipu = len(re.search(r"(^\.+)", choice[c][k]).group(1))
                 choice[c][k + "_url"] = "/".join(djob.url.split("/")[:-ipu]) + choice[c][k][ipu:]
                 choice[c].pop(k)
+        djob.others=choice
         MPD.init_dirs(djob, choice.keys(), logger)
         FbIg._download(djob, logger)
         logger.ok(f"downloaded {djob.fo.complete_download_filename} size {utils.format_file_size(djob.fo.complete_download_filename.stat().st_size)}")
 
-    def _download(djob: "Djob", choice: dict[str, dict], logger: logging.Logger) -> None:
+    def _download(djob: "Djob", logger: logging.Logger) -> None:
         # download  init files first
-        for x in djob.jobs:
+        for x in djob.others:
             request.download(
-                djob.jobs[x]["init_url"],
+                djob.others[x]["init_url"],
                 djob.headers,
                 djob.fo.parts_dir / x / FbIg.INIT_FILENAME,
                 rlogger.get_adapter(logger, f"init-header for {x}"),
@@ -472,7 +473,7 @@ class FbIg:
                 preload_content=True,
             )
         # we take item from each job
-        current_media_number = [djob.jobs[k]["media_number"] for k in list(djob.jobs)]
+        current_media_number = [djob.others[k]["media_number"] for k in list(djob.others)]
         if len(current_media_number) == 2:
             if current_media_number[0] != current_media_number[1]:
                 logger.critical(
@@ -483,15 +484,15 @@ class FbIg:
             current_media_number = current_media_number[0]
 
         logger.debug(f"media_number starting at {FbIg.DEFAULT_PREDICTED_MEDIA_START} current_media_number {current_media_number}")
-        for x in djob.jobs:
-            djob.jobs[x]["current_task"] = FbIg.DEFAULT_PREDICTED_MEDIA_START
+        for x in djob.others:
+            djob.others[x]["current_task"] = FbIg.DEFAULT_PREDICTED_MEDIA_START
 
         def generate_urls():
             while 1:
-                for f in djob.jobs:
-                    current_task = djob.jobs[f]["current_task"]
-                    djob.jobs[f]["current_task"] += 1
-                    yield {"url": djob.jobs[f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"), "f": f, "current_task": current_task}
+                for f in djob.others:
+                    current_task = djob.others[f]["current_task"]
+                    djob.others[f]["current_task"] += 1
+                    yield {"url": djob.others[f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"), "f": f, "current_task": current_task}
 
         def download_with_thread_local_vars(t):
             end = current_media_number if t["current_task"] <= current_media_number else FbIg.INFINITY
