@@ -569,7 +569,7 @@ class Downloader:
             f = HLS.download
         elif t == "xml":
             base_url = utils.get_base_url(djob.url)
-            if any([x in base_url for x in [".okcdn.", "vkideo.ru"]]):
+            if any([x in base_url for x in [".okcdn.", "vkideo.ru","ok.ru","vkuser.net"]]):
                 f = VK.download
             else:
                 f = FbIg.download
