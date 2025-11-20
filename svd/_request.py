@@ -117,12 +117,13 @@ def check_clcr(
 
 
 class ProgressFormatter:
-    def __init__(self, total: Optional[int] = None, func: Optional[Callable[["ProgressFormatter", int], str]] = None):
+    def __init__(self, total: Optional[int] = None, func: Optional[Callable[["ProgressFormatter", int], str]] = None,present:int=0):
         if total == 0:
             raise ZeroDivisionError(total)
         self.total = total
         self.downloaded = 0
-        self.func = func or ProgressFormatter.default_progress_formatter
+        self.present=present
+        self.func = func or ProgressFormatter.default_formatter
 
     def __call__(self, downloaded: Optional[int] = None) -> str:
         """Update progress and return formatted string."""
@@ -139,10 +140,10 @@ class ProgressFormatter:
         pf = cls(total=None, func=cls._do_nothing)
         return pf
 
-    def default_progress_formatter(self, downloaded: Optional[int] = None) -> str:
+    def default_formatter(self, downloaded: Optional[int] = None) -> str:
         """Default formatter showing percentage progress."""
         if downloaded is not None:
             self.downloaded += downloaded
         if self.total is None:
             return ""
-        return f"{self.downloaded / self.total * 100.0:.2f}%"
+        return f"{(self.downloaded+self.present) / self.total * 100.0:.2f}%"

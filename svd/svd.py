@@ -94,7 +94,7 @@ class Raw:
 
     def download(djob: "Djob"):
         djob.headers["range"] = "bytes=0-"
-        if hasattr(djob, "logger"):
+        if hasattr(djob, "logger") and djob.logger:
             logger = djob.logger
         else:
             logger = rlogger.get_adapter(Options.logger, Raw.__name__)
@@ -120,14 +120,14 @@ class Raw:
                 if y is not None:
                     x.downloaded += y
                 return f"saved {utils.format_file_size(x.downloaded)}"
-
+            pf=request.ProgressFormatter(None, format_progress)
             Options.exec.submit(
                 lambda: request.download(
                     djob.url,
                     djob.headers,
                     djob.fo.complete_download_filename,
                     logger=rlogger.get_adapter(logger, f"no content length"),
-                    progress_formatter=request.ProgressFormatter(None, format_progress),
+                    progress_formatter=pf,
                     preload_content=False,
                 )
             ).result()
@@ -166,6 +166,7 @@ class Raw:
             content_ranges = utils.get_missing_ranges(byte_end=content_length, part_size=Options.part_size, pcrs=pcrs)
             logger.info(f"downloading  {utils.format_file_size(content_length-size_present)}")
             logger.debug(f"<JOB> (jobs={len(content_ranges)} jobs {content_ranges})")
+            pf=request.ProgressFormatter(content_length ,present= size_present)
             [
                 _
                 for _ in Options.exec.map(
@@ -176,7 +177,7 @@ class Raw:
                         rlogger.get_adapter(logger, f"job {x[0]+1}/{len(content_ranges)} {utils.get_thread_name()}"),
                         x[1],
                         content_length,
-                        progress_formatter=request.ProgressFormatter(content_length - size_present),
+                        progress_formatter=pf,
                         preload_content=False,
                     ),
                     enumerate(content_ranges),
@@ -463,13 +464,14 @@ class FbIg:
 
     def _download(djob: "Djob", logger: logging.Logger) -> None:
         # download  init files first
+        pf=request.ProgressFormatter.default()
         for x in djob.others:
             request.download(
                 djob.others[x]["init_url"],
                 djob.headers,
                 djob.fo.parts_dir / x / FbIg.INIT_FILENAME,
                 rlogger.get_adapter(logger, f"init-header for {x}"),
-                progress_formatter=request.ProgressFormatter.default(),
+                progress_formatter=pf,
                 preload_content=True,
             )
         # we take item from each job
@@ -494,6 +496,7 @@ class FbIg:
                     djob.others[f]["current_task"] += 1
                     yield {"url": djob.others[f]["media_url"].replace(FbIg.MEDIA_NUMBER_STR, f"{current_task}"), "f": f, "current_task": current_task}
 
+        pf=request.ProgressFormatter.default()
         def download_with_thread_local_vars(t):
             end = current_media_number if t["current_task"] <= current_media_number else FbIg.INFINITY
             request.download(
@@ -501,7 +504,7 @@ class FbIg:
                 djob.headers,
                 djob.fo.parts_dir / t["f"] / str(t["current_task"]),
                 rlogger.get_adapter(logger, f"{t['f']}@{t['current_task']}/{end} {utils.get_thread_name()}"),
-                progress_formatter=request.ProgressFormatter.default(),
+                progress_formatter=pf,
                 preload_content=True,
             )
 

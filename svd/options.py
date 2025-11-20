@@ -126,84 +126,88 @@ def get_options() -> _Options:
     global _options_instance
     if _options_instance:
         return _options_instance
-    parser = argparse.ArgumentParser(
-        prog="svd",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description=textwrap.dedent(
-            """
-                        simple video downloader(svd)
-    svd is a simple downloader for common video urls passed as json.
-    It can download:
-                        [1] Raw videos e.g example.com/video.mp4
-                        [2] Segmented videos (hls)
-                        [3] Specific live videos (from facebook and Instagram)
+    try:
+        parser = argparse.ArgumentParser(
+            prog="svd",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description=textwrap.dedent(
+                """
+                            simple video downloader(svd)
+        svd is a simple downloader for common video urls passed as json.
+        It can download:
+                            [1] Raw videos e.g example.com/video.mp4
+                            [2] Segmented videos (hls)
+                            [3] Specific live videos (from facebook and Instagram)
+        
+        simple json should include url,headers & type e.g
+            {
+                "url":"example.com/video.mp4",
+                "headers":
+                            {"referer":"example.com"},
+                "type":"raw"
+            }
+        
+        [#] Since building this json could be tedious, a simple svd browser extension
+            is provided here:  https://github.com/fskamau/svd-extension
+        [#] Since some links contain text longer than 2048 bytes, normal clipboards will cut
+                the json which will result to json.decoder.JSONDecodeError. save the text to
+                a file and pass it to svd. e.g svd -i /path/to/saved/file
+        [#] The program will continously read stdin for control signals.
+            Passing / or c will read clipboard contents and treat them as json.
+            passing . or q will quit.
     
-    simple json should include url,headers & type e.g
-        {
-            "url":"example.com/video.mp4",
-            "headers":
-                        {"referer":"example.com"},
-            "type":"raw"
-        }
+                            
+                            """
+            ),
+        )
     
-    [#] Since building this json could be tedious, a simple svd browser extension
-        is provided here:  https://github.com/fskamau/svd-extension
-    [#] Since some links contain text longer than 2048 bytes, normal clipboards will cut
-            the json which will result to json.decoder.JSONDecodeError. save the text to
-            a file and pass it to svd. e.g svd -i /path/to/saved/file
-    [#] The program will continously read stdin for control signals.
-        Passing / or c will read clipboard contents and treat them as json.
-        passing . or q will quit.
-
-                        
-                        """
-        ),
-    )
-
-    parser.add_argument("-w", dest="workers", type=int, default=1, help="number of worker threads")
-    parser.add_argument(
-        "-s",
-        dest="part_size",
-        default="1024T",
-        help="size of 1 download part. e.g 1M, 512M, 2G. A download will be split into parts with @ part-size <= to this size.",
-    )
-    parser.add_argument("-i", dest="filename", type=Path, default=None, help="file to read json to download")
-
-    parser.add_argument(
-        "-c",
-        dest="chunk_read_size",
-        default="1M",
-        help="chunk size to read from socket eg.512K. bigger is better but incase of an error all unwritten data is lost ",
-    )
-    parser.add_argument("-d", dest="complete_dir", type=Path, default=Path.home() / "Downloads", help="complete files directory")
-    parser.add_argument("-p", dest="parts_dir", type=Path, default=Path.home(), help="temporary parts directory")
-    parser.add_argument("-v", dest="verbose", action="store_true", default=False, help="verbose")
-    parser.add_argument(
-        "--no-ssl",
-        default=True,
-        action="store_false",
-        help="turn off ssl. unless you know what you are doing, *This is completely dangerous*. It can be used to access content where some servers host files in storage buckets without ssl",
-    )
-    parser.add_argument("--no-keep", default=False, action="store_true", help="delete parts after a download is complete")
-    parser.add_argument("--clean", default=False, action="store_true", help="clean up parts dir")
-    parser.add_argument("filepath", nargs="?", type=Path, default=None)
-
-    args = parser.parse_args()
-    _options_instance = _Options(
-        workers=args.workers,
-        part_size=_Options._get_bytes_from_str(args.part_size),
-        input_filename=args.filename,
-        chunk_read_size=_Options._get_bytes_from_str(args.chunk_read_size),
-        complete_dir=args.complete_dir,
-        parts_dir=args.parts_dir,
-        verbose=args.verbose,
-        ssl_on=args.no_ssl,
-        no_keep=args.no_keep,
-        clean=args.clean,
-        output_filepath=args.filepath,
-    )
-    _options_instance.init()
-    return get_options()
+        parser.add_argument("-w", dest="workers", type=int, default=1, help="number of worker threads")
+        parser.add_argument(
+            "-s",
+            dest="part_size",
+            default="1024T",
+            help="size of 1 download part. e.g 1M, 512M, 2G. A download will be split into parts with @ part-size <= to this size.",
+        )
+        parser.add_argument("-i", dest="filename", type=Path, default=None, help="file to read json to download")
+    
+        parser.add_argument(
+            "-c",
+            dest="chunk_read_size",
+            default="1M",
+            help="chunk size to read from socket eg.512K. bigger is better but incase of an error all unwritten data is lost ",
+        )
+        parser.add_argument("-d", dest="complete_dir", type=Path, default=Path.home() / "Downloads", help="complete files directory")
+        parser.add_argument("-p", dest="parts_dir", type=Path, default=Path.home(), help="temporary parts directory")
+        parser.add_argument("-v", dest="verbose", action="store_true", default=False, help="verbose")
+        parser.add_argument(
+            "--no-ssl",
+            default=True,
+            action="store_false",
+            help="turn off ssl. unless you know what you are doing, *This is completely dangerous*. It can be used to access content where some servers host files in storage buckets without ssl",
+        )
+        parser.add_argument("--no-keep", default=False, action="store_true", help="delete parts after a download is complete")
+        parser.add_argument("--clean", default=False, action="store_true", help="clean up parts dir")
+        parser.add_argument("filepath", nargs="?", type=Path, default=None)
+    
+        args = parser.parse_args()
+        _options_instance = _Options(
+            workers=args.workers,
+            part_size=_Options._get_bytes_from_str(args.part_size),
+            input_filename=args.filename,
+            chunk_read_size=_Options._get_bytes_from_str(args.chunk_read_size),
+            complete_dir=args.complete_dir,
+            parts_dir=args.parts_dir,
+            verbose=args.verbose,
+            ssl_on=args.no_ssl,
+            no_keep=args.no_keep,
+            clean=args.clean,
+            output_filepath=args.filepath,
+        )
+        _options_instance.init()
+        return get_options()
+    except Exception as e:
+        get_logger().error(e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
