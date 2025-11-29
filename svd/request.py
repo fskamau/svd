@@ -17,7 +17,7 @@ Options = get_options()
 from ._request import *
 
 
-def make_request(method, url, headers, logger, allow_mime_text: bool = True, preload_content: bool = True, enforce_content_length: bool = True):
+def make_request(method, url, headers, logger, preload_content: bool = True, enforce_content_length: bool = True):
     try:
         r = Options.http.request(method=method, url=url, headers=headers, preload_content=preload_content, enforce_content_length=enforce_content_length)
         logger.debug(summarize_headers(r.headers))
@@ -26,10 +26,10 @@ def make_request(method, url, headers, logger, allow_mime_text: bool = True, pre
             raise exceptions.StatusCodeException(r)
         cr = get_content_range(r.headers, logger)
         cl = get_content_length(r.headers, logger)
-        if allow_mime_text == False:
+        if not Options.allow_text:
             if (ctype := r.headers.get("content-type")) is not None:
                 if "text" in ctype and r.status not in (206,):
-                    temp_fname = utils.save_response_to_temp_file(r.data)
+                    utils.save_response_to_temp_file(r.data)
                     logger.error([url, r.headers])
                     raise exceptions.DownloadError("mime type contains 'text' which is not allowed check headers")
         return cr, cl, r
@@ -70,7 +70,7 @@ def download(
         headers["range"] = str(rq_r)
         logger.debug(f"downloading range {headers['range']}")
     cr, cl, r = make_request(
-        "GET", url, headers=headers, logger=logger, allow_mime_text=False, preload_content=preload_content, enforce_content_length=preload_content
+        "GET", url, headers=headers, logger=logger, preload_content=preload_content, enforce_content_length=preload_content
     )
     if not check_clcr(cl1, rq_r, cl, cr, logger):
         raise exceptions.DownloadError(

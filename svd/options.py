@@ -28,6 +28,7 @@ class _Options:
         no_keep,
         clean,
         output_filepath,
+        allow_text,
     ):
         self.workers = workers
         self.part_size = part_size
@@ -42,6 +43,7 @@ class _Options:
         self.no_keep = no_keep
         self.clean = clean
         self.output_filepath = output_filepath
+        self.allow_text=allow_text
 
         self.logger = get_logger("𝘚𝘝𝘋" + (" with-no-ssl" if not self.ssl_on else ""))
         if not ssl_on:
@@ -188,6 +190,8 @@ def get_options() -> _Options:
         parser.add_argument("--no-keep", default=False, action="store_true", help="delete parts after a download is complete")
         parser.add_argument("--clean", default=False, action="store_true", help="clean up parts dir")
         parser.add_argument("filepath", nargs="?", type=Path, default=None)
+        parser.add_argument("--allow-text", default=False, action="store_true", help="allow txt mimetype")
+
 
         args = parser.parse_args()
         _options_instance = _Options(
@@ -202,6 +206,7 @@ def get_options() -> _Options:
             no_keep=args.no_keep,
             clean=args.clean,
             output_filepath=args.filepath,
+            allow_text=args.allow_text,
         )
         _options_instance.init()
         return get_options()

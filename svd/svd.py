@@ -101,7 +101,7 @@ class Raw:
         if djob.fo.check_completed_download(logger=logger):
             return
         content_range, content_length, r = request.make_request(
-            "GET", djob.url, djob.headers, logger, allow_mime_text=False, preload_content=False
+            "GET", djob.url, djob.headers, logger,preload_content=False
         )  # some servers will return 403 with 'HEAD' since they dont expect you to ...
         r.release_conn()
         logger.debug(f"from HEAD request: {request.summarize_headers(r.headers)}")
