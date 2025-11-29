@@ -190,7 +190,7 @@ def get_options() -> _Options:
         parser.add_argument("--no-keep", default=False, action="store_true", help="delete parts after a download is complete")
         parser.add_argument("--clean", default=False, action="store_true", help="clean up parts dir")
         parser.add_argument("filepath", nargs="?", type=Path, default=None)
-        parser.add_argument("--allow-text", default=False, action="store_true", help="allow txt mimetype")
+        parser.add_argument("--allow-text", default=False, action="store_true", help="allow text/* mimetype. Some servers will send media as text/* to confuse downloaders")
 
 
         args = parser.parse_args()
