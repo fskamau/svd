@@ -560,6 +560,7 @@ class Downloader:
         return djob
 
     def download(self, data: dict):
+        data_cp=data.copy()
         djob = self.parse_data(data)
         t = data.get("type", "raw")
         f = None
@@ -580,7 +581,7 @@ class Downloader:
         if o := Options.get_output_filepath():
             djob.fo.set_completed_filepath(o)
         with (djob.fo.cwd / "info").open("w") as wrt:
-            wrt.write(json.dumps(data))
+            wrt.write(json.dumps(data_cp))
         t = time.perf_counter()
         f(djob)
         self.logger.ok(f"took {utils.format_time(time.perf_counter()-t)}")

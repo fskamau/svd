@@ -9,6 +9,7 @@ from urllib3 import HTTPHeaderDict
 import threading
 import tempfile
 from ._request import Range
+from logging import Logger
 
 from . import exceptions
 
@@ -72,11 +73,11 @@ def get_thread_name() -> str:
     return threading.current_thread().name
 
 
-def save_response_to_temp_file(b: bytes) -> str:
+def save_response_to_temp_file(b: bytes,logger:Logger) -> None:
     temp_fname = tempfile.NamedTemporaryFile(delete=False)
     temp_fname.write(b)
     temp_fname.close()
-    return temp_fname
+    logger.critical(f"output written to {temp_fname.name}")
 
 
 def get_folder_size(path: Path) -> int:

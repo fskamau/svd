@@ -12,12 +12,13 @@ from . import utils
 import re
 from . import exceptions
 from typing import Optional
+from logging import Logger
 
 Options = get_options()
 from ._request import *
 
 
-def make_request(method, url, headers, logger, preload_content: bool = True, enforce_content_length: bool = True):
+def make_request(method:str, url:str, headers:HTTPHeaderDict, logger:Logger, preload_content: bool = True, enforce_content_length: bool = True):
     try:
         r = Options.http.request(method=method, url=url, headers=headers, preload_content=preload_content, enforce_content_length=enforce_content_length)
         logger.debug(summarize_headers(r.headers))
@@ -31,7 +32,8 @@ def make_request(method, url, headers, logger, preload_content: bool = True, enf
                 if "text" in ctype and r.status not in (206,):
                     utils.save_response_to_temp_file(r.data)
                     logger.error([url, r.headers])
-                    raise exceptions.DownloadError("mime type contains 'text' which is not allowed check headers")
+                    raise exceptions.DownloadError("mime type contains 'text' which is not allowed"
+                                                   " check headers. use --allow-text after reading help -")
         return cr, cl, r
     except urllib3.exceptions.MaxRetryError as e:
         if e.reason and isinstance(e.reason, urllib3.exceptions.SSLError):
